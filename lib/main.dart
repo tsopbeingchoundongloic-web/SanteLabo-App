@@ -17,9 +17,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: _url, anonKey: _key);
   runApp(MaterialApp(
-    title: 'SantéLab',
+    title: 'St Victor de Bafia',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(useMaterial3: true, brightness: Brightness.dark, colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF64FFDA), brightness: Brightness.dark), scaffoldBackgroundColor: const Color(0xFF0A192F), appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF112240))),
+    theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF123C80)).copyWith(primary: const Color(0xFF123C80), secondary: const Color(0xFF7AB51D)), scaffoldBackgroundColor: Colors.white, appBarTheme: const AppBarTheme(backgroundColor: Colors.white, foregroundColor: Color(0xFF123C80), surfaceTintColor: Colors.white)),
     home: const Gate(),
   ));
 }
@@ -68,8 +68,9 @@ class _AuthPageState extends State<AuthPage> {
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(children: [
-                const Text('SantéLab', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w800, color: Color(0xFF64FFDA))),
-                const Text('Le laboratoire proche de chez vous'),
+                Image.asset('assets/logo.png', height: 120),
+                const Text('St Victor de Bafia', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: Color(0xFF123C80))),
+                const Text('Voir juste, diagnostiquer mieux, soigner efficacement', textAlign: TextAlign.center),
                 const SizedBox(height: 24),
                 if (signup) TextField(controller: name, decoration: const InputDecoration(labelText: 'Nom complet')),
                 if (signup) TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Téléphone')),
@@ -139,6 +140,7 @@ Widget lst(List<Widget> ch, Future<void> Function() refresh) => RefreshIndicator
       child: ListView(children: ch.isEmpty ? [const Padding(padding: EdgeInsets.all(24), child: Text('Rien à afficher pour le moment.'))] : ch),
     );
 
+const disciplines = ['Biochimie', 'Hématologie', 'Bactériologie', 'Parasitologie', 'Immuno-sérologie', 'Imagerie - Radiographie', 'Imagerie - Échographie'];
 const reqSel = '*, patient:profiles!patient_id(full_name, phone)';
 
 List<Widget> reqInfo(Map<String, dynamic> r) {
@@ -167,11 +169,15 @@ class Home extends StatelessWidget {
           final p = s.data!;
           switch (p['role']) {
             case 'superadmin':
-              return const SuperPage();
+              return const AdminPage(isSuper: true);
+            case 'promoteur':
+              return const AdminPage(isSuper: false);
             case 'major':
               return MajorPage(lab: p['lab_id']);
             case 'preleveur':
               return const MissionsPage();
+            case 'imagerie':
+              return ImagerieStaffPage(lab: p['lab_id']);
             default:
               return PatientPage(favLab: p['fav_lab_id']);
           }
@@ -200,13 +206,16 @@ class _PatientPageState extends State<PatientPage> {
         length: 3,
         child: Scaffold(
           appBar: AppBar(
-            title: const Text('SantéLab'),
+            title: Row(children: [Image.asset('assets/logo.png', height: 34), const SizedBox(width: 8), const Flexible(child: Text('St Victor de Bafia', overflow: TextOverflow.ellipsis))]),
             actions: [logoutBtn()],
-            bottom: const TabBar(tabs: [Tab(text: 'Établissement'), Tab(text: 'Commander'), Tab(text: 'Mes demandes')]),
+            bottom: const TabBar(tabs: [Tab(text: 'Le centre'), Tab(text: 'Commander'), Tab(text: 'Mes demandes')]),
           ),
           body: TabBarView(children: [
             load(q(db.from('labs').select().eq('active', true).order('name')), (l) => lst([
-                  const Padding(padding: EdgeInsets.all(12), child: Text('Choisissez votre laboratoire')),
+                  for (final im in ['radio', 'labo', 'accueil']) Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 0), child: ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/$im.jpg', height: 150, width: double.infinity, fit: BoxFit.cover))),
+                  const Padding(padding: EdgeInsets.all(12), child: Text('Radiographie, échographie et analyses médicales : voir juste, diagnostiquer mieux, soigner efficacement.', style: TextStyle(fontWeight: FontWeight.bold))),
+                  loadIn(q(db.from('contacts').select().order('id')), (cs) => Column(children: [for (final k in cs) contactTile(k)])),
+                  
                   ListTile(leading: const Icon(Icons.key), title: const Text('J’ai un code d’invitation (personnel du laboratoire)'), onTap: () => redeem(c)),
                   for (final x in l)
                     ListTile(
@@ -233,70 +242,103 @@ class OrderTab extends StatefulWidget {
 }
 
 class _OrderTabState extends State<OrderTab> {
-  final sel = <String>{};
+  final sel = <String>{}, centerOnly = <String>{}, imaging = <String>{};
   final quarter = TextEditingController(), addr = TextEditingController();
-  String slot = slots.first;
+  String slot = slots.first, mode = 'domicile';
   DateTime? date;
   double? lat, lng;
   bool busy = false;
-  late final ex = q(db.from('lab_exams').select('custom_conditions, exams(name, discipline, conditions)').eq('lab_id', widget.lab ?? '').eq('active', true));
+  late final ex = q(db.from('lab_exams').select('custom_conditions, exams(name, discipline, conditions, at_center_only, service)').eq('lab_id', widget.lab ?? '').eq('active', true));
+
+  List<String> get labSel => sel.where((n) => !imaging.contains(n)).toList();
+  List<String> get imgSel => sel.where(imaging.contains).toList();
+  bool get labAtCenter => mode == 'centre' || labSel.any(centerOnly.contains);
 
   Future<void> send() async {
-    if (sel.isEmpty || quarter.text.trim().isEmpty || addr.text.trim().isEmpty || date == null) {
-      snack(context, 'Choisissez au moins un examen, la date, le quartier et le lieu.');
+    final lb = labSel, im = imgSel, labCtr = labAtCenter;
+    if (sel.isEmpty || date == null || (lb.isNotEmpty && !labCtr && (quarter.text.trim().isEmpty || addr.text.trim().isEmpty))) {
+      snack(context, 'Choisissez au moins un examen, la date et, pour un prélèvement à domicile, le quartier et le lieu.');
       return;
     }
+    Map<String, dynamic> row(String service, List<String> names, bool centre) => {
+          'patient_id': db.auth.currentUser!.id,
+          'lab_id': widget.lab,
+          'service': service,
+          'exam_names': names,
+          'mode': centre ? 'centre' : 'domicile',
+          'quarter': centre ? 'Au centre' : quarter.text.trim(),
+          'address': centre ? 'Centre St Victor de Bafia' : addr.text.trim(),
+          'wanted_date': date!.toIso8601String().substring(0, 10),
+          'slot': slot,
+          'lat': centre ? null : lat,
+          'lng': centre ? null : lng,
+        };
+    final rows0 = <Map<String, dynamic>>[
+      if (lb.isNotEmpty) row('laboratoire', lb, labCtr),
+      if (im.isNotEmpty) row('imagerie', im, true),
+    ];
     setState(() => busy = true);
-    final ok = await run(
-        context,
-        () => db.from('requests').insert({
-              'patient_id': db.auth.currentUser!.id,
-              'lab_id': widget.lab,
-              'exam_names': sel.toList(),
-              'quarter': quarter.text.trim(),
-              'address': addr.text.trim(),
-              'wanted_date': date!.toIso8601String().substring(0, 10),
-              'slot': slot,
-              'lat': lat,
-              'lng': lng,
-            }),
-        'Demande envoyée. Le laboratoire va vous contacter.');
+    final ok = await run(context, () => db.from('requests').insert(rows0),
+        rows0.length > 1 ? 'Vos demandes d’analyses et d’imagerie sont envoyées. Le centre va vous confirmer.' : 'Demande envoyée. Le centre va vous confirmer.');
     if (ok) { lat = null; lng = null; sel.clear(); quarter.clear(); addr.clear(); date = null; }
     if (mounted) setState(() => busy = false);
   }
 
   @override
   Widget build(BuildContext c) {
-    if (widget.lab == null) return const Center(child: Text('Choisissez d’abord votre laboratoire.'));
-    return load(ex, (l) => ListView(padding: const EdgeInsets.all(12), children: [
-          const Text('1. Choisissez vos examens', style: TextStyle(fontWeight: FontWeight.bold)),
-          for (final x in l)
-            CheckboxListTile(
-              value: sel.contains(x['exams']['name']),
-              onChanged: (v) => setState(() => v == true ? sel.add(x['exams']['name']) : sel.remove(x['exams']['name'])),
-              controlAffinity: ListTileControlAffinity.leading,
-              title: Text(x['exams']['name']),
-              subtitle: Text('${x['exams']['discipline']} — ${x['custom_conditions'] ?? x['exams']['conditions']}'),
-            ),
-          const Divider(),
-          const Text('2. Où et quand ?', style: TextStyle(fontWeight: FontWeight.bold)),
+    if (widget.lab == null) return const Center(child: Text('Centre indisponible. Reconnectez-vous.'));
+    return load(ex, (l) {
+      for (final x in l) {
+        final e = x['exams'];
+        if (e['at_center_only'] == true) centerOnly.add(e['name']);
+        if (e['service'] == 'imagerie') imaging.add(e['name']);
+      }
+      final hasLab = labSel.isNotEmpty, hasImg = imgSel.isNotEmpty, home = hasLab && !labAtCenter;
+      return ListView(padding: const EdgeInsets.all(12), children: [
+        ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/accueil.jpg', height: 140, width: double.infinity, fit: BoxFit.cover)),
+        const SizedBox(height: 12),
+        const Text('1. Choisissez vos examens', style: TextStyle(fontWeight: FontWeight.bold)),
+        for (final x in l)
+          CheckboxListTile(
+            value: sel.contains(x['exams']['name']),
+            onChanged: (v) => setState(() => v == true ? sel.add(x['exams']['name']) : sel.remove(x['exams']['name'])),
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(x['exams']['name']),
+            subtitle: Text('${x['exams']['discipline']} — ${x['custom_conditions'] ?? x['exams']['conditions']}'),
+          ),
+        const Divider(),
+        const Text('2. Où et quand ?', style: TextStyle(fontWeight: FontWeight.bold)),
+        if (hasImg)
+          const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('Les examens d’imagerie se font au centre : venez avec votre ordonnance.', style: TextStyle(color: Color(0xFF123C80)))),
+        if (hasLab && !labSel.any(centerOnly.contains))
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'domicile', label: Text('Analyses à domicile'), icon: Icon(Icons.home)),
+              ButtonSegment(value: 'centre', label: Text('Analyses au centre'), icon: Icon(Icons.local_hospital)),
+            ],
+            selected: {mode},
+            onSelectionChanged: (v) => setState(() => mode = v.first),
+          ),
+        if (home) ...[
           TextField(controller: quarter, decoration: const InputDecoration(labelText: 'Quartier')),
           TextField(controller: addr, decoration: const InputDecoration(labelText: 'Adresse / lieu / repère')),
-          DropdownButtonFormField<String>(
-            value: slot,
-            items: [for (final x in slots) DropdownMenuItem(value: x, child: Text(x))],
-            onChanged: (v) => setState(() => slot = v ?? slot),
-            decoration: const InputDecoration(labelText: 'Créneau souhaité'),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(date == null ? 'Choisir la date' : date!.toIso8601String().substring(0, 10)),
-            trailing: const Icon(Icons.calendar_today),
-            onTap: () async {
-              final d = await showDatePicker(context: c, initialDate: DateTime.now(), firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 60)));
-              if (d != null) setState(() => date = d);
-            },
-          ),
+        ],
+        DropdownButtonFormField<String>(
+          value: slot,
+          items: [for (final x in slots) DropdownMenuItem(value: x, child: Text(x))],
+          onChanged: (v) => setState(() => slot = v ?? slot),
+          decoration: const InputDecoration(labelText: 'Créneau souhaité'),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(date == null ? 'Choisir la date' : date!.toIso8601String().substring(0, 10)),
+          trailing: const Icon(Icons.calendar_today),
+          onTap: () async {
+            final d = await showDatePicker(context: c, initialDate: DateTime.now(), firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 60)));
+            if (d != null) setState(() => date = d);
+          },
+        ),
+        if (home)
           OutlinedButton.icon(
             icon: const Icon(Icons.my_location),
             label: Text(lat == null ? 'Partager ma position (GPS)' : 'Position enregistrée'),
@@ -305,8 +347,9 @@ class _OrderTabState extends State<OrderTab> {
               if (p != null) setState(() { lat = p.latitude; lng = p.longitude; });
             },
           ),
-          FilledButton(onPressed: busy ? null : send, child: const Text('Envoyer ma demande')),
-        ]));
+        FilledButton(onPressed: busy ? null : send, child: Text(home ? 'Envoyer ma demande' : 'Demander un rendez-vous')),
+      ]);
+    });
   }
 }
 
@@ -355,7 +398,7 @@ class MajorPage extends StatelessWidget {
           actions: [logoutBtn()],
           bottom: const TabBar(tabs: [Tab(text: 'Demandes'), Tab(text: 'Examens'), Tab(text: 'Équipe')]),
         ),
-        body: TabBarView(children: [MajorReqs(lab: lab!), MajorExams(lab: lab!), Team(lab: lab!)]),
+        body: TabBarView(children: [MajorReqs(lab: lab!, service: 'laboratoire'), MajorExams(lab: lab!), Team(lab: lab!)]),
       ),
     );
   }
@@ -363,7 +406,8 @@ class MajorPage extends StatelessWidget {
 
 class MajorReqs extends StatefulWidget {
   final String lab;
-  const MajorReqs({super.key, required this.lab});
+  final String? service;
+  const MajorReqs({super.key, required this.lab, this.service});
   @override
   State<MajorReqs> createState() => _MajorReqsState();
 }
@@ -376,7 +420,7 @@ class _MajorReqsState extends State<MajorReqs> {
 
   @override
   Widget build(BuildContext c) => load(q(db.from('profiles').select('id, full_name').eq('lab_id', widget.lab).eq('role', 'preleveur')), (team) =>
-      load(q(db.from('requests').select(reqSel).eq('lab_id', widget.lab).order('created_at', ascending: false)), (l) => lst([
+      load(q((widget.service == null ? db.from('requests').select(reqSel).eq('lab_id', widget.lab) : db.from('requests').select(reqSel).eq('lab_id', widget.lab).eq('service', widget.service!)).order('created_at', ascending: false)), (l) => lst([
             for (final r in l)
               Card(
                 margin: const EdgeInsets.all(8),
@@ -384,7 +428,14 @@ class _MajorReqsState extends State<MajorReqs> {
                   padding: const EdgeInsets.all(12),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     ...reqInfo(r),
-                    if (['pending', 'accepted', 'en_route'].contains(r['status']))
+                    if (r['mode'] == 'centre' && ['pending', 'accepted'].contains(r['status']))
+                      Wrap(spacing: 8, children: [
+                        if (r['status'] == 'pending') FilledButton(onPressed: () => act(r['id'], {'status': 'accepted'}), child: const Text('Confirmer le rendez-vous')),
+                        if (r['status'] == 'accepted') FilledButton(onPressed: () => act(r['id'], {'status': 'done'}), child: const Text('Examen terminé')),
+                        TextButton(onPressed: () => openChat(c, r), child: const Text('Message')),
+                        TextButton(onPressed: () => act(r['id'], {'status': 'cancelled'}), child: const Text('Annuler')),
+                      ]),
+                    if (r['mode'] != 'centre' && ['pending', 'accepted', 'en_route'].contains(r['status']))
                       Row(children: [
                         Expanded(
                           child: DropdownButton<String>(
@@ -417,23 +468,82 @@ class _MajorExamsState extends State<MajorExams> {
     if (mounted) setState(() {});
   }
 
-  @override
-  Widget build(BuildContext c) => load(q(db.from('lab_exams').select('exam_id, active, custom_conditions, exams(name, conditions)').eq('lab_id', widget.lab)), (l) => lst([
-        for (final x in l)
-          SwitchListTile(
-            value: x['active'] as bool,
-            onChanged: (v) => upd(x['exam_id'], {'active': v}),
-            title: Text(x['exams']['name']),
-            subtitle: Text('${x['custom_conditions'] ?? x['exams']['conditions']}'),
-            secondary: IconButton(
-              icon: const Icon(Icons.edit),
-              onPressed: () async {
-                final v = await ask(c, 'Conditions de prélèvement', 'Vide = conditions du catalogue');
-                if (v != null) upd(x['exam_id'], {'custom_conditions': v.isEmpty ? null : v});
-              },
-            ),
+  Future<void> addExam() async {
+    final name = TextEditingController(), cond = TextEditingController();
+    String disc = disciplines.first;
+    bool center = false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => StatefulBuilder(
+        builder: (d, st) => AlertDialog(
+          title: const Text('Ajouter un examen'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Nom de l’examen')),
+              DropdownButtonFormField<String>(
+                value: disc,
+                items: [for (final x in disciplines) DropdownMenuItem(value: x, child: Text(x))],
+                onChanged: (v) => st(() => disc = v ?? disc),
+                decoration: const InputDecoration(labelText: 'Catégorie'),
+              ),
+              TextField(controller: cond, maxLines: 3, decoration: const InputDecoration(labelText: 'Conditions de prélèvement ou de préparation')),
+              SwitchListTile(contentPadding: EdgeInsets.zero, value: center, onChanged: (v) => st(() => center = v), title: const Text('Uniquement au centre')),
+            ]),
           ),
-      ], () async => setState(() {})));
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Annuler')),
+            FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Ajouter')),
+          ],
+        ),
+      ),
+    );
+    if (ok == true && mounted) {
+      await run(context, () => db.rpc('add_exam', params: {'p_name': name.text, 'p_discipline': disc, 'p_conditions': cond.text, 'p_center': center}), 'Examen ajouté.');
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> delExam(dynamic id, String nom) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Supprimer cet examen ?'),
+        content: Text('« $nom » sera supprimé définitivement de la liste. Pour le cacher seulement, utilisez l’interrupteur.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Supprimer')),
+        ],
+      ),
+    );
+    if (yes == true && mounted) {
+      await run(context, () => db.rpc('remove_exam', params: {'p_exam': id}), 'Examen supprimé.');
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        floatingActionButton: FloatingActionButton.extended(icon: const Icon(Icons.add), label: const Text('Ajouter un examen'), onPressed: addExam),
+        body: load(q(db.from('lab_exams').select('exam_id, active, custom_conditions, exams(name, conditions)').eq('lab_id', widget.lab)), (l) => lst([
+              for (final x in l)
+                SwitchListTile(
+                  value: x['active'] as bool,
+                  onChanged: (v) => upd(x['exam_id'], {'active': v}),
+                  title: Text(x['exams']['name']),
+                  subtitle: Text('${x['custom_conditions'] ?? x['exams']['conditions']}'),
+                  secondary: Row(mainAxisSize: MainAxisSize.min, children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      onPressed: () async {
+                        final v = await ask(c, 'Conditions de prélèvement', 'Vide = conditions du catalogue');
+                        if (v != null) upd(x['exam_id'], {'custom_conditions': v.isEmpty ? null : v});
+                      },
+                    ),
+                    IconButton(icon: const Icon(Icons.delete_outline), onPressed: () => delExam(x['exam_id'], x['exams']['name'])),
+                  ]),
+                ),
+            ], () async => setState(() {}))),
+      );
 }
 
 class Team extends StatefulWidget {
@@ -478,8 +588,8 @@ class _TeamState extends State<Team> {
               for (final p in l)
                 ListTile(
                   title: Text(p['full_name'] ?? ''),
-                  subtitle: Text('${p['role']} · ${p['phone'] ?? ''}'),
-                  trailing: p['role'] == 'preleveur'
+                  subtitle: Text('${roleFr(p['role'])} · ${p['phone'] ?? ''}'),
+                  trailing: ['preleveur', 'imagerie'].contains(p['role'])
                       ? IconButton(icon: const Icon(Icons.person_remove), onPressed: () => go(() => db.rpc('release_user', params: {'p_user': p['id']})))
                       : null,
                 ),
@@ -575,6 +685,10 @@ class _SuperPageState extends State<SuperPage> {
                         TextButton(
                           onPressed: () => go(() => db.rpc('set_lab_active', params: {'p_lab': x['lab_id'], 'p_active': !(x['active'] as bool)})),
                           child: Text(x['active'] ? 'Suspendre' : 'Réactiver'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Examens du centre')), body: MajorExams(lab: x['lab_id'])))),
+                          child: const Text('Gérer les examens')
                         ),
                         TextButton(
                           onPressed: () async {
@@ -674,7 +788,7 @@ class _ChatPageState extends State<ChatPage> {
                     Align(
                       alignment: m['sender_id'] == db.auth.currentUser!.id ? Alignment.centerRight : Alignment.centerLeft,
                       child: Card(
-                        color: m['sender_id'] == db.auth.currentUser!.id ? const Color(0xFF1D3B63) : const Color(0xFF112240),
+                        color: m['sender_id'] == db.auth.currentUser!.id ? const Color(0xFFDDEFB5) : Colors.white,
                         child: InkWell(
                           onTap: () {
                             final u = RegExp(r'https://\S+').firstMatch('${m['body']}');
@@ -763,7 +877,162 @@ class _ShimmerListState extends State<ShimmerList> with SingleTickerProviderStat
         opacity: Tween<double>(begin: 0.3, end: 0.8).animate(a),
         child: ListView(padding: const EdgeInsets.all(12), children: [
           for (var i = 0; i < 5; i++)
-            Container(height: 72, margin: const EdgeInsets.only(bottom: 10), decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(12))),
+            Container(height: 72, margin: const EdgeInsets.only(bottom: 10), decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(12))),
         ]),
+      );
+}
+
+// ---------- Promoteur / Super Administrateur ----------
+String digits(String p) => p.replaceAll(RegExp(r'[^0-9]'), '');
+String normPhone(String p) {
+  final d = digits(p);
+  if (p.trim().startsWith('+')) return '+$d';
+  return d.length == 9 ? '+237$d' : '+$d';
+}
+
+Widget loadIn(Future<List<Map<String, dynamic>>> f, Widget Function(List<Map<String, dynamic>>) b) => FutureBuilder<List<Map<String, dynamic>>>(
+      future: f,
+      builder: (c, s) {
+        if (s.hasError) return Text('Erreur : ${s.error}');
+        if (!s.hasData) return const LinearProgressIndicator();
+        return b(s.data!);
+      },
+    );
+
+Widget contactTile(Map<String, dynamic> k) => ListTile(
+      leading: const Icon(Icons.call),
+      title: Text('${k['label']}'),
+      subtitle: Text('${k['phone']}'),
+      onTap: () => launchUrl(Uri.parse('tel:${k['phone']}'.replaceAll(' ', ''))),
+      trailing: IconButton(
+        icon: const Icon(Icons.chat),
+        tooltip: 'WhatsApp',
+        onPressed: () => launchUrl(Uri.parse('https://wa.me/${digits('${k['phone']}')}'), mode: LaunchMode.externalApplication),
+      ),
+    );
+
+class AdminPage extends StatelessWidget {
+  final bool isSuper;
+  const AdminPage({super.key, required this.isSuper});
+  @override
+  Widget build(BuildContext c) => FutureBuilder<List<Map<String, dynamic>>>(
+        future: q(db.from('labs').select('id').order('created_at').limit(1)),
+        builder: (c, s) {
+          if (s.hasError) return Scaffold(appBar: AppBar(actions: [logoutBtn()]), body: Center(child: Text('Erreur : ${s.error}')));
+          if (!s.hasData) return const Scaffold(body: ShimmerList());
+          if (s.data!.isEmpty) return Scaffold(appBar: AppBar(actions: [logoutBtn()]), body: const Center(child: Text('Aucun centre créé.')));
+          final lab = s.data!.first['id'] as String;
+          return DefaultTabController(
+            length: 5,
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(isSuper ? 'Super Administrateur' : 'Promoteur'),
+                actions: [logoutBtn()],
+                bottom: const TabBar(isScrollable: true, tabs: [Tab(text: 'Laboratoire'), Tab(text: 'Imagerie'), Tab(text: 'Examens'), Tab(text: 'Équipe'), Tab(text: 'Centre')]),
+              ),
+              body: TabBarView(children: [MajorReqs(lab: lab, service: 'laboratoire'), MajorReqs(lab: lab, service: 'imagerie'), MajorExams(lab: lab), Team(lab: lab), CenterAdmin(lab: lab, isSuper: isSuper)]),
+            ),
+          );
+        },
+      );
+}
+
+class CenterAdmin extends StatefulWidget {
+  final String lab;
+  final bool isSuper;
+  const CenterAdmin({super.key, required this.lab, required this.isSuper});
+  @override
+  State<CenterAdmin> createState() => _CenterAdminState();
+}
+
+class _CenterAdminState extends State<CenterAdmin> {
+  Future<void> go(Future<dynamic> Function() f, [String? ok]) async {
+    await run(context, f, ok);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> nominate(String role, String title) async {
+    final e = await ask(context, title, 'E-mail de son compte (déjà créé dans l’application)');
+    if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': e, 'p_role': role, 'p_lab': widget.lab}), 'Fait.');
+  }
+
+  Future<void> addContact() async {
+    final label = TextEditingController(), phone = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Ajouter un numéro'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: label, decoration: const InputDecoration(labelText: 'Nom (ex. Accueil, Promoteur)')),
+          TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Numéro (ex. 686863091)')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Ajouter')),
+        ],
+      ),
+    );
+    if (ok == true && digits(phone.text).isNotEmpty) {
+      go(() => db.from('contacts').insert({'label': label.text.trim().isEmpty ? 'Centre' : label.text.trim(), 'phone': normPhone(phone.text)}), 'Numéro ajouté.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) => ListView(padding: const EdgeInsets.all(12), children: [
+        loadIn(q(db.rpc('lab_stats')), (l) => Column(children: [
+              for (final x in l)
+                Card(
+                  child: ListTile(
+                    title: Text(x['name']),
+                    subtitle: Text('${x['active'] ? 'Actif' : 'Suspendu'} · ${x['total']} demandes dont ${x['pending']} en attente'),
+                    trailing: TextButton(
+                      onPressed: () => go(() => db.rpc('set_lab_active', params: {'p_lab': x['lab_id'], 'p_active': !(x['active'] as bool)})),
+                      child: Text(x['active'] ? 'Suspendre' : 'Réactiver'),
+                    ),
+                  ),
+                ),
+            ])),
+        const SizedBox(height: 12),
+        const Text('Responsables', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        Wrap(spacing: 8, children: [
+          OutlinedButton(onPressed: () => nominate('major', 'Nommer un Major'), child: const Text('Nommer un Major')),
+          OutlinedButton(onPressed: () => nominate('imagerie', 'Ajouter du personnel d’imagerie'), child: const Text('Ajouter du personnel d’imagerie')),
+          if (widget.isSuper) OutlinedButton(onPressed: () => nominate('promoteur', 'Nommer le promoteur'), child: const Text('Nommer le promoteur')),
+        ]),
+        loadIn(q(db.from('profiles').select('id, full_name, phone, role').inFilter('role', ['major', 'promoteur', 'imagerie'])), (l) => Column(children: [
+              for (final p in l)
+                ListTile(
+                  title: Text(p['full_name'] ?? ''),
+                  subtitle: Text('${roleFr(p['role'])} · ${p['phone'] ?? ''}'),
+                  trailing: (p['role'] != 'promoteur' || widget.isSuper)
+                      ? IconButton(icon: const Icon(Icons.person_remove), tooltip: 'Retirer', onPressed: () => go(() => db.rpc('release_user', params: {'p_user': p['id']}), 'Retiré.'))
+                      : null,
+                ),
+            ])),
+        const SizedBox(height: 12),
+        const Text('Numéros de contact (visibles par les patients)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        loadIn(q(db.from('contacts').select().order('id')), (l) => Column(children: [
+              for (final k in l)
+                ListTile(
+                  leading: const Icon(Icons.call),
+                  title: Text('${k['label']}'),
+                  subtitle: Text('${k['phone']}'),
+                  trailing: IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Retirer', onPressed: () => go(() => db.from('contacts').delete().eq('id', k['id']), 'Numéro retiré.')),
+                ),
+            ])),
+        OutlinedButton.icon(icon: const Icon(Icons.add), label: const Text('Ajouter un numéro'), onPressed: addContact),
+      ]);
+}
+
+// ---------- Personnel d'imagerie ----------
+String roleFr(dynamic r) => const {'promoteur': 'Promoteur', 'imagerie': 'Imagerie', 'major': 'Major', 'preleveur': 'Préleveur'}[r] ?? '$r';
+
+class ImagerieStaffPage extends StatelessWidget {
+  final String? lab;
+  const ImagerieStaffPage({super.key, this.lab});
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        appBar: AppBar(title: const Text('Imagerie médicale'), actions: [logoutBtn()]),
+        body: lab == null ? const Center(child: Text('Aucun centre rattaché à ce compte.')) : MajorReqs(lab: lab!, service: 'imagerie'),
       );
 }
