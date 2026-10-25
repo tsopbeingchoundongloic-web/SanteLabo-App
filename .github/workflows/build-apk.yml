@@ -20,10 +20,12 @@ jobs:
       - run: flutter pub get
       - name: Icône de l'application
         continue-on-error: true
-        run: dart run flutter_launcher_icons
-      - run: flutter build apk --release --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: StVictor-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
+        run: dart run flutter_launcher_icons    
+- name: Construire l'APK
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      run: |
+        flutter build apk --release \
+          --dart-define="SUPABASE_URL=$SUPABASE_URL" \
+          --dart-define="SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
