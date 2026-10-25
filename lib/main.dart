@@ -45,15 +45,15 @@ class _AuthPageState extends State<AuthPage> {
   void msg(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
   Future<void> submit() async {
-    if (email.text.trim().isEmpty || pass.text.length < 6) { msg('E-mail et mot de passe (6 caractères minimum) requis.'); return; }
+    if (digits(phone.text).length < 8 || pass.text.length < 6) { msg('Numéro de téléphone et mot de passe (6 caractères minimum) requis.'); return; }
     if (signup && (name.text.trim().isEmpty || !ok)) { msg('Indiquez votre nom et acceptez les conditions.'); return; }
     setState(() => busy = true);
     try {
       if (signup) {
-        final r = await db.auth.signUp(email: email.text.trim(), password: pass.text, data: {'full_name': name.text.trim(), 'phone': phone.text.trim()});
-        if (r.session == null) msg('Compte créé. Confirmez votre e-mail puis connectez-vous.');
+        final r = await db.auth.signUp(phone: normPhone(phone.text), password: pass.text, data: {'full_name': name.text.trim(), 'phone': normPhone(phone.text)});
+        if (r.session == null) msg('Compte créé, mais la confirmation du téléphone est encore activée : contactez le centre.');
       } else {
-        await db.auth.signInWithPassword(email: email.text.trim(), password: pass.text);
+        await db.auth.signInWithPassword(phone: normPhone(phone.text), password: pass.text);
       }
     } on AuthException catch (e) {
       msg(e.message);
@@ -73,8 +73,8 @@ class _AuthPageState extends State<AuthPage> {
                 const Text('Voir juste, diagnostiquer mieux, soigner efficacement', textAlign: TextAlign.center),
                 const SizedBox(height: 24),
                 if (signup) TextField(controller: name, decoration: const InputDecoration(labelText: 'Nom complet')),
-                if (signup) TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Téléphone')),
-                TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'E-mail')),
+                TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Numéro de téléphone', hintText: 'ex. 692024812')),
+                
                 TextField(controller: pass, obscureText: true, decoration: const InputDecoration(labelText: 'Mot de passe')),
                 if (signup)
                   CheckboxListTile(
@@ -565,8 +565,8 @@ class _TeamState extends State<Team> {
           icon: const Icon(Icons.person_add),
           label: const Text('Ajouter un préleveur'),
           onPressed: () async {
-            final e = await ask(c, 'Ajouter un préleveur', 'E-mail de son compte SantéLab');
-            if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': e, 'p_role': 'preleveur', 'p_lab': widget.lab}), 'Préleveur ajouté.');
+            final e = await ask(c, 'Ajouter un préleveur', 'Numéro de téléphone de son compte');
+            if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': normPhone(e), 'p_role': 'preleveur', 'p_lab': widget.lab}), 'Préleveur ajouté.');
           },
         ),
         body: load(q(db.from('profiles').select('id, full_name, phone, role').eq('lab_id', widget.lab)), (l) => lst([
@@ -692,7 +692,7 @@ class _SuperPageState extends State<SuperPage> {
                         ),
                         TextButton(
                           onPressed: () async {
-                            final e = await ask(c, 'Nommer un Major', 'E-mail de son compte SantéLab');
+                            final e = await ask(c, 'Nommer un Major', 'Numéro de téléphone de son compte');
                             if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': e, 'p_role': 'major', 'p_lab': x['lab_id']}), 'Major nommé.');
                           },
                           child: const Text('Nommer un Major'),
@@ -952,8 +952,8 @@ class _CenterAdminState extends State<CenterAdmin> {
   }
 
   Future<void> nominate(String role, String title) async {
-    final e = await ask(context, title, 'E-mail de son compte (déjà créé dans l’application)');
-    if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': e, 'p_role': role, 'p_lab': widget.lab}), 'Fait.');
+    final e = await ask(context, title, 'Numéro de téléphone de son compte (déjà créé dans l’application)');
+    if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': normPhone(e), 'p_role': role, 'p_lab': widget.lab}), 'Fait.');
   }
 
   Future<void> addContact() async {
