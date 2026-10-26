@@ -1,4 +1,5 @@
-await Supabase.initialize(
-  url: 'https://VOTRE-PROJET.supabase.co',
-  anonKey: 'VOTRE_CLE_PUBLIABLE',
-);
+# Application Saint-Victor de Bafia
+1. Ouvrir lib/config.dart et coller l'adresse et la cle du projet Supabase (valeurs publiques).
+2. Supabase : executer supabase_tout_en_un.sql (base neuve) ou supabase_v5_connexion.sql (base deja installee).
+3. Supabase > Authentication > Sign In / Providers > Email : desactiver "Confirm email".
+4. GitHub : envoyer tous les fichiers, puis telecharger l'artefact SaintVictor-APK dans l'onglet Actions.
