@@ -1,10 +1,10 @@
-name: Build APK Saint-Victor
+name: Build Saint-Victor (Android et iPhone)
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,10 @@ jobs:
         run: |
           sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
           sed -i 's#android:label="[^"]*"#android:label="Saint-Victor"#' android/app/src/main/AndroidManifest.xml
+      - name: Cle de signature stable (mises a jour par-dessus l'ancienne version)
+        run: |
+          mkdir -p ~/.android
+          cp android-signing/debug.keystore ~/.android/debug.keystore
       - run: flutter pub get
       - name: Icone de l'application
         continue-on-error: true
@@ -29,4 +33,29 @@ jobs:
         with:
           name: SaintVictor-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verifier la configuration
+        run: |
+          if grep -q "COLLEZ_ICI" lib/config.dart; then echo "ERREUR : le fichier lib/config.dart n'est pas rempli."; exit 1; fi
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: flutter create . --platforms=web --project-name santelab --org cm.stvictor
+      - name: Nom et icones de la version web
+        run: |
+          sed -i 's/santelab/Saint-Victor/g' web/index.html web/manifest.json
+          convert assets/icon.png -resize 192x192 web/icons/Icon-192.png
+          convert assets/icon.png -resize 512x512 web/icons/Icon-512.png
+          convert assets/icon.png -resize 192x192 web/icons/Icon-maskable-192.png
+          convert assets/icon.png -resize 512x512 web/icons/Icon-maskable-512.png
+          convert assets/icon.png -resize 32x32 web/favicon.png
+      - run: flutter pub get
+      - run: flutter build web --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SaintVictor-Web-iPhone
+          path: build/web
           if-no-files-found: error
