@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'config.dart';
 
-const _url = String.fromEnvironment('SUPABASE_URL');
-const _key = String.fromEnvironment('SUPABASE_ANON_KEY');
 SupabaseClient get db => Supabase.instance.client;
 
 const slots = ['Matin (7h–10h)', 'Fin de matinée (10h–12h)', 'Après-midi (14h–17h)'];
@@ -13,15 +14,142 @@ const statusFr = {'pending': 'En attente', 'accepted': 'Acceptée', 'en_route': 
 List<Map<String, dynamic>> rows(dynamic d) => List<Map<String, dynamic>>.from(d as List);
 Widget logoutBtn() => Row(mainAxisSize: MainAxisSize.min, children: [const BellBtn(), IconButton(icon: const Icon(Icons.logout), tooltip: 'Se déconnecter', onPressed: () => db.auth.signOut())]);
 
+const navy = Color(0xFF123C80), lime = Color(0xFF7AB51D), limeLight = Color(0xFF9FD43A), pale = Color(0xFFC9D8F0), soft = Color(0xFFF3F7FB);
+final lang = ValueNotifier<String>('fr');
+final freshLogin = ValueNotifier<bool>(false);
+final notifReq = ValueNotifier<bool>(true), notifMsg = ValueNotifier<bool>(true);
+String gUrl = '', gKey = '';
+String t(String fr, String en) => lang.value == 'en' ? en : fr;
+String cleanUrl(String s) => RegExp(r'https://[A-Za-z0-9\-]+\.supabase\.co').firstMatch(s)?.group(0) ?? '';
+String cleanKey(String s) => s.replaceAll(RegExp(r'[\s"]'), '');
+String techEmail(String phone) {
+  final p = kTechEmail.split('@');
+  return '${p[0]}+${digits(normPhone(phone))}@${p[1]}';
+}
+bool notifOn(Map<String, dynamic> x) => x['title'] == 'Nouveau message' ? notifMsg.value : notifReq.value;
+Future<void> setLang(String l) async {
+  lang.value = l;
+  (await SharedPreferences.getInstance()).setString('lang', l);
+}
+String frErr(String m) {
+  final l = m.toLowerCase();
+  if (l.contains('invalid login')) return t('Numéro ou mot de passe incorrect.', 'Wrong number or password.');
+  if (l.contains('already registered')) return t('Ce numéro a déjà un compte : connectez-vous.', 'This number already has an account: sign in.');
+  if (l.contains('password')) return t('Mot de passe trop court (6 caractères minimum).', 'Password too short (6 characters minimum).');
+  if (l.contains('rate limit')) return t('Trop de tentatives : réessayez dans quelques minutes.', 'Too many attempts: try again in a few minutes.');
+  return m;
+}
+String spaceName(dynamic role) => {
+      'patient': t('Espace patient', 'Patient space'),
+      'superadmin': 'Super Administrateur',
+      'promoteur': 'Promoteur',
+      'major': t('Espace laboratoire', 'Laboratory space'),
+      'preleveur': t('Préleveur à domicile', 'Home sampler'),
+      'imagerie': t('Espace imagerie médicale', 'Medical imaging space'),
+    }[role] ?? '$role';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Supabase.initialize(url: _url, anonKey: _key);
-  runApp(MaterialApp(
-    title: 'St Victor de Bafia',
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF123C80)).copyWith(primary: const Color(0xFF123C80), secondary: const Color(0xFF7AB51D)), scaffoldBackgroundColor: Colors.white, appBarTheme: const AppBarTheme(backgroundColor: Colors.white, foregroundColor: Color(0xFF123C80), surfaceTintColor: Colors.white)),
-    home: const Gate(),
-  ));
+  final pr = await SharedPreferences.getInstance();
+  lang.value = pr.getString('lang') ?? 'fr';
+  notifReq.value = pr.getBool('notifReq') ?? true;
+  notifMsg.value = pr.getBool('notifMsg') ?? true;
+  gUrl = cleanUrl(kSupabaseUrl);
+  gKey = cleanKey(kSupabaseKey);
+  if (gUrl.isEmpty || gKey.length < 40) {
+    runApp(const ConfigError('L’adresse ou la clé Supabase est absente ou incorrecte dans le fichier lib/config.dart.'));
+    return;
+  }
+  try {
+    await Supabase.initialize(url: gUrl, anonKey: gKey);
+  } catch (e) {
+    runApp(ConfigError('$e'));
+    return;
+  }
+  runApp(const StVictorApp());
+}
+
+class ConfigError extends StatelessWidget {
+  final String msg;
+  const ConfigError(this.msg, {super.key});
+  @override
+  Widget build(BuildContext c) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.settings_suggest, size: 64, color: navy),
+                const SizedBox(height: 12),
+                const Text('Configuration à compléter', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                Text(msg, textAlign: TextAlign.center),
+                const SizedBox(height: 12),
+                const Text('Ouvrez lib/config.dart sur GitHub, collez l’adresse et la clé de votre projet Supabase, puis refabriquez l’application.', textAlign: TextAlign.center),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
+class StVictorApp extends StatelessWidget {
+  const StVictorApp({super.key});
+  @override
+  Widget build(BuildContext c) => ValueListenableBuilder<String>(
+        valueListenable: lang,
+        builder: (c, _, __) => MaterialApp(
+          title: 'Saint-Victor',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(seedColor: navy).copyWith(primary: navy, secondary: lime),
+            scaffoldBackgroundColor: Colors.white,
+            appBarTheme: const AppBarTheme(backgroundColor: navy, foregroundColor: Colors.white, surfaceTintColor: navy),
+          ),
+          home: const SplashPage(),
+        ),
+      );
+}
+
+class SplashPage extends StatefulWidget {
+  const SplashPage({super.key});
+  @override
+  State<SplashPage> createState() => _SplashPageState();
+}
+
+class _SplashPageState extends State<SplashPage> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 2800), () {
+      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const Gate()));
+    });
+  }
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        backgroundColor: navy,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(28),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(width: 150, height: 150, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(16), child: Image.asset('assets/logo.png')),
+              const SizedBox(height: 24),
+              Text(t('BIENVENUE', 'WELCOME'), style: const TextStyle(color: limeLight, letterSpacing: 2, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Text(t('au Centre d’Imagerie et d’Analyse Médicale', 'to the Medical Imaging and Analysis Center'), textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 6),
+              const Text('Saint-Victor de Bafia', textAlign: TextAlign.center, style: TextStyle(color: limeLight, fontSize: 30, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 14),
+              Text(t('Voir juste, diagnostiquer mieux, soigner efficacement', 'See clearly, diagnose better, care effectively'), textAlign: TextAlign.center, style: const TextStyle(color: pale)),
+              const SizedBox(height: 32),
+              const SizedBox(width: 130, child: LinearProgressIndicator(color: limeLight, backgroundColor: Colors.white24)),
+            ]),
+          ),
+        ),
+      );
 }
 
 class Gate extends StatelessWidget {
@@ -29,7 +157,54 @@ class Gate extends StatelessWidget {
   @override
   Widget build(BuildContext c) => StreamBuilder<AuthState>(
         stream: db.auth.onAuthStateChange,
-        builder: (c, _) => db.auth.currentSession == null ? const AuthPage() : const Home(),
+        builder: (c, _) {
+          if (db.auth.currentSession == null) return const AuthPage();
+          return ValueListenableBuilder<bool>(valueListenable: freshLogin, builder: (c, f, __) => f ? const WelcomeAfter() : const Home());
+        },
+      );
+}
+
+class WelcomeAfter extends StatefulWidget {
+  const WelcomeAfter({super.key});
+  @override
+  State<WelcomeAfter> createState() => _WelcomeAfterState();
+}
+
+class _WelcomeAfterState extends State<WelcomeAfter> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) freshLogin.value = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        body: FutureBuilder<Map<String, dynamic>>(
+          future: db.from('profiles').select('full_name, role').eq('id', db.auth.currentUser!.id).single(),
+          builder: (c, s) {
+            final name = s.hasData ? '${s.data!['full_name'] ?? ''}' : '';
+            final role = s.hasData ? s.data!['role'] : 'patient';
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(width: 96, height: 96, decoration: const BoxDecoration(color: Color(0xFFE2F2C8), shape: BoxShape.circle), child: const Icon(Icons.verified_user, size: 48, color: Color(0xFF2F5A00))),
+                  const SizedBox(height: 16),
+                  Text(t('Connexion réussie', 'Signed in'), style: const TextStyle(color: Color(0xFF5A6B82))),
+                  const SizedBox(height: 8),
+                  Text(t('Bienvenue,', 'Welcome,'), style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: navy)),
+                  Text(name, textAlign: TextAlign.center, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: navy)),
+                  const SizedBox(height: 12),
+                  Chip(label: Text(spaceName(role)), backgroundColor: const Color(0xFFE2F2C8)),
+                  const SizedBox(height: 28),
+                  FilledButton(onPressed: () => freshLogin.value = false, child: Text(t('Continuer', 'Continue'))),
+                ]),
+              ),
+            );
+          },
+        ),
       );
 }
 
@@ -40,57 +215,123 @@ class AuthPage extends StatefulWidget {
 }
 
 class _AuthPageState extends State<AuthPage> {
-  final email = TextEditingController(), pass = TextEditingController(), name = TextEditingController(), phone = TextEditingController();
-  bool signup = false, busy = false, ok = false;
+  final pass = TextEditingController(), name = TextEditingController(), phone = TextEditingController();
+  bool signup = false, busy = false, ok = false, hide = true;
+  late final Future<String> health = _health();
+
+  Future<String> _health() async {
+    try {
+      final r = await http.get(Uri.parse('$gUrl/auth/v1/health'), headers: {'apikey': gKey}).timeout(const Duration(seconds: 10));
+      if (r.statusCode == 200) return 'ok';
+      if (r.statusCode == 401 || r.statusCode == 403) return 'key';
+      return 'down';
+    } catch (_) {
+      return 'net';
+    }
+  }
+
   void msg(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
   Future<void> submit() async {
-    if (digits(phone.text).length < 8 || pass.text.length < 6) { msg('Numéro de téléphone et mot de passe (6 caractères minimum) requis.'); return; }
-    if (signup && (name.text.trim().isEmpty || !ok)) { msg('Indiquez votre nom et acceptez les conditions.'); return; }
+    if (digits(phone.text).length < 8 || pass.text.length < 6) {
+      msg(t('Numéro de téléphone et mot de passe (6 caractères minimum) requis.', 'Phone number and password (6 characters minimum) required.'));
+      return;
+    }
+    if (signup && (name.text.trim().isEmpty || !ok)) {
+      msg(t('Indiquez votre nom et acceptez les conditions.', 'Enter your name and accept the conditions.'));
+      return;
+    }
     setState(() => busy = true);
+    freshLogin.value = true;
     try {
+      final email = techEmail(phone.text);
       if (signup) {
-        final r = await db.auth.signUp(phone: normPhone(phone.text), password: pass.text, data: {'full_name': name.text.trim(), 'phone': normPhone(phone.text)});
-        if (r.session == null) msg('Compte créé, mais la confirmation du téléphone est encore activée : contactez le centre.');
+        final r = await db.auth.signUp(email: email, password: pass.text, data: {'full_name': name.text.trim(), 'phone': normPhone(phone.text)});
+        if (r.session == null) {
+          freshLogin.value = false;
+          msg('Compte créé, mais Supabase demande une confirmation : désactivez « Confirm email » (Authentication, Sign In / Providers, Email).');
+        }
       } else {
-        await db.auth.signInWithPassword(phone: normPhone(phone.text), password: pass.text);
+        await db.auth.signInWithPassword(email: email, password: pass.text);
       }
     } on AuthException catch (e) {
-      msg(e.message);
+      freshLogin.value = false;
+      msg(frErr(e.message));
+    } catch (e) {
+      freshLogin.value = false;
+      msg(t('Connexion impossible. Vérifiez votre accès Internet.', 'Cannot connect. Check your Internet access.'));
     }
     if (mounted) setState(() => busy = false);
   }
 
+  Widget langChip(String code) => ChoiceChip(
+        label: Text(code.toUpperCase()),
+        selected: lang.value == code,
+        onSelected: (_) async {
+          await setLang(code);
+          if (mounted) setState(() {});
+        },
+      );
+
   @override
   Widget build(BuildContext c) => Scaffold(
-        body: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
+        backgroundColor: soft,
+        body: SingleChildScrollView(
+          child: Column(children: [
+            Container(
+              width: double.infinity,
+              color: navy,
+              padding: const EdgeInsets.fromLTRB(24, 50, 24, 30),
               child: Column(children: [
-                Image.asset('assets/logo.png', height: 120),
-                const Text('St Victor de Bafia', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: Color(0xFF123C80))),
-                const Text('Voir juste, diagnostiquer mieux, soigner efficacement', textAlign: TextAlign.center),
-                const SizedBox(height: 24),
-                if (signup) TextField(controller: name, decoration: const InputDecoration(labelText: 'Nom complet')),
-                TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Numéro de téléphone', hintText: 'ex. 692024812')),
-                
-                TextField(controller: pass, obscureText: true, decoration: const InputDecoration(labelText: 'Mot de passe')),
+                Align(alignment: Alignment.centerRight, child: Row(mainAxisSize: MainAxisSize.min, children: [langChip('fr'), const SizedBox(width: 6), langChip('en')])),
+                Container(width: 96, height: 96, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(10), child: Image.asset('assets/logo.png')),
+                const SizedBox(height: 10),
+                const Text('Saint-Victor de Bafia', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
+                Text(signup ? t('Créer votre compte', 'Create your account') : t('Connexion à votre espace', 'Sign in to your space'), style: const TextStyle(color: pale)),
+              ]),
+            ),
+            Container(
+              margin: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), boxShadow: const [BoxShadow(color: Color(0x1F123C80), blurRadius: 10, offset: Offset(0, 3))]),
+              child: Column(children: [
+                if (signup) TextField(controller: name, textCapitalization: TextCapitalization.words, decoration: InputDecoration(labelText: t('Nom complet', 'Full name'))),
+                TextField(controller: phone, keyboardType: TextInputType.phone, decoration: InputDecoration(labelText: t('Numéro de téléphone', 'Phone number'), hintText: '692024812')),
+                TextField(
+                  controller: pass,
+                  obscureText: hide,
+                  decoration: InputDecoration(labelText: t('Mot de passe', 'Password'), suffixIcon: IconButton(icon: Icon(hide ? Icons.visibility : Icons.visibility_off), onPressed: () => setState(() => hide = !hide))),
+                ),
                 if (signup)
                   CheckboxListTile(
                     value: ok,
                     onChanged: (v) => setState(() => ok = v ?? false),
                     controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text("J’accepte que mes informations soient utilisées par le centre pour organiser mon prélèvement.", style: TextStyle(fontSize: 13)),
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(t('J’accepte que mes informations soient utilisées par le centre pour organiser mon prélèvement ou mon rendez-vous.', 'I agree that my information is used by the center to organize my sampling or appointment.'), style: const TextStyle(fontSize: 13)),
                   ),
-                const SizedBox(height: 12),
-                FilledButton(onPressed: busy ? null : submit, child: Text(signup ? 'Créer mon compte' : 'Se connecter')),
-                TextButton(onPressed: () => setState(() => signup = !signup), child: Text(signup ? 'J’ai déjà un compte' : 'Créer un compte')),
                 const SizedBox(height: 16),
-                const Text('Développé par TSOPBEING Loic', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                SizedBox(width: double.infinity, child: FilledButton(onPressed: busy ? null : submit, child: Text(signup ? t('Créer mon compte', 'Create my account') : t('Se connecter', 'Sign in')))),
+                TextButton(onPressed: () => setState(() => signup = !signup), child: Text(signup ? t('J’ai déjà un compte', 'I already have an account') : t('Créer un compte', 'Create an account'))),
               ]),
             ),
-          ),
+            FutureBuilder<String>(
+              future: health,
+              builder: (c, s) {
+                final v = s.data;
+                final good = v == 'ok';
+                final text = v == null
+                    ? t('Vérification du serveur…', 'Checking server…')
+                    : good
+                        ? t('Serveur connecté', 'Server connected')
+                        : v == 'key'
+                            ? t('Clé de l’application refusée : vérifiez lib/config.dart', 'Application key rejected: check lib/config.dart')
+                            : t('Serveur injoignable : vérifiez Internet', 'Server unreachable: check Internet');
+                return Padding(padding: const EdgeInsets.only(bottom: 6), child: Text(text, style: TextStyle(fontSize: 12, color: v == null ? const Color(0xFF5A6B82) : good ? const Color(0xFF2F5A00) : Colors.red.shade800)));
+              },
+            ),
+            const Padding(padding: EdgeInsets.fromLTRB(0, 6, 0, 20), child: Text('Développé par TSOPBEING Loic', style: TextStyle(fontSize: 12, color: Color(0xFF5A6B82)))),
+          ]),
         ),
       );
 }
@@ -186,6 +427,32 @@ class Home extends StatelessWidget {
 }
 
 // ---------- PATIENT ----------
+Widget box(List<Widget> ch) => Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), boxShadow: const [BoxShadow(color: Color(0x1F123C80), blurRadius: 8, offset: Offset(0, 2))]),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: ch),
+    );
+
+Widget homeTile(IconData ic, String title, String sub, Color col, VoidCallback? onTap) => Material(
+      color: Colors.white,
+      elevation: 1.5,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(width: 42, height: 42, decoration: BoxDecoration(color: col, borderRadius: BorderRadius.circular(12)), child: Icon(ic, color: Colors.white)),
+            const SizedBox(height: 8),
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(sub, style: const TextStyle(fontSize: 12, color: Color(0xFF5A6B82))),
+          ]),
+        ),
+      ),
+    );
+
 class PatientPage extends StatefulWidget {
   final String? favLab;
   const PatientPage({super.key, this.favLab});
@@ -195,43 +462,143 @@ class PatientPage extends StatefulWidget {
 
 class _PatientPageState extends State<PatientPage> {
   String? lab;
+  int tab = 0;
+  String name = '';
+
   @override
   void initState() {
     super.initState();
     lab = widget.favLab;
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final me = await db.from('profiles').select('full_name').eq('id', db.auth.currentUser!.id).single();
+      name = '${me['full_name'] ?? ''}';
+      if (lab == null) {
+        final l = await db.from('labs').select('id').eq('active', true).order('created_at').limit(1);
+        if ((l as List).isNotEmpty) {
+          lab = l.first['id'];
+          await db.from('profiles').update({'fav_lab_id': lab}).eq('id', db.auth.currentUser!.id);
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   @override
-  Widget build(BuildContext c) => DefaultTabController(
-        length: 3,
-        child: Scaffold(
-          appBar: AppBar(
-            title: Row(children: [Image.asset('assets/logo.png', height: 34), const SizedBox(width: 8), const Flexible(child: Text('St Victor de Bafia', overflow: TextOverflow.ellipsis))]),
-            actions: [logoutBtn()],
-            bottom: const TabBar(tabs: [Tab(text: 'Le centre'), Tab(text: 'Commander'), Tab(text: 'Mes demandes')]),
+  Widget build(BuildContext c) {
+    final titles = [t('Accueil', 'Home'), t('Commander', 'Order'), t('Mes demandes', 'My requests'), t('Paramètres', 'Settings')];
+    final pages = <Widget>[
+      PatientHome(onGo: (i) => setState(() => tab = i)),
+      OrderTab(key: ValueKey(lab), lab: lab),
+      const MyRequestsTab(),
+      const SettingsTab(),
+    ];
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: 68,
+        title: Row(children: [
+          Container(width: 42, height: 42, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(5), child: Image.asset('assets/logo.png')),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              Text(tab == 0 ? '${t('Bonjour', 'Hello')}${name.isEmpty ? '' : ', $name'}' : titles[tab], overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              Text(t('Espace patient', 'Patient space'), style: const TextStyle(fontSize: 12, color: pale)),
+            ]),
           ),
-          body: TabBarView(children: [
-            load(q(db.from('labs').select().eq('active', true).order('name')), (l) => lst([
-                  for (final im in ['radio', 'labo', 'accueil']) Padding(padding: const EdgeInsets.fromLTRB(12, 8, 12, 0), child: ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/$im.jpg', height: 150, width: double.infinity, fit: BoxFit.cover))),
-                  const Padding(padding: EdgeInsets.all(12), child: Text('Radiographie, échographie et analyses médicales : voir juste, diagnostiquer mieux, soigner efficacement.', style: TextStyle(fontWeight: FontWeight.bold))),
-                  loadIn(q(db.from('contacts').select().order('id')), (cs) => Column(children: [for (final k in cs) contactTile(k)])),
-                  
-                  ListTile(leading: const Icon(Icons.key), title: const Text('J’ai un code d’invitation (personnel du laboratoire)'), onTap: () => redeem(c)),
-                  for (final x in l)
-                    ListTile(
-                      title: Text(x['name']),
-                      trailing: x['id'] == lab ? const Icon(Icons.check_circle, color: Colors.green) : null,
-                      onTap: () async {
-                        final ok = await run(c, () => db.from('profiles').update({'fav_lab_id': x['id']}).eq('id', db.auth.currentUser!.id));
-                        if (ok && mounted) setState(() => lab = x['id']);
-                      },
-                    ),
-                ], () async => setState(() {}))),
-            OrderTab(key: ValueKey(lab), lab: lab),
-            const MyRequestsTab(),
-          ]),
-        ),
-      );
+        ]),
+        actions: [logoutBtn()],
+      ),
+      body: Container(color: soft, child: pages[tab]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: (i) => setState(() => tab = i),
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: titles[0]),
+          NavigationDestination(icon: const Icon(Icons.add_circle_outline), selectedIcon: const Icon(Icons.add_circle), label: titles[1]),
+          NavigationDestination(icon: const Icon(Icons.list_alt_outlined), selectedIcon: const Icon(Icons.list_alt), label: t('Demandes', 'Requests')),
+          NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: titles[3]),
+        ],
+      ),
+    );
+  }
+}
+
+class PatientHome extends StatelessWidget {
+  final void Function(int) onGo;
+  const PatientHome({super.key, required this.onGo});
+  @override
+  Widget build(BuildContext c) => ListView(padding: const EdgeInsets.all(14), children: [
+        ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/accueil.jpg', height: 130, width: double.infinity, fit: BoxFit.cover)),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: homeTile(Icons.add_circle, t('Commander', 'Order'), t('Analyses et imagerie', 'Tests and imaging'), navy, () => onGo(1))),
+          const SizedBox(width: 12),
+          Expanded(child: homeTile(Icons.list_alt, t('Mes demandes', 'My requests'), t('Suivi en direct', 'Live tracking'), lime, () => onGo(2))),
+        ]),
+        const SizedBox(height: 12),
+        loadIn(q(db.from('contacts').select().order('id').limit(1)), (cs) {
+          final ph = cs.isEmpty ? null : '${cs.first['phone']}';
+          return Row(children: [
+            Expanded(child: homeTile(Icons.call, t('Appeler', 'Call'), t('Le centre', 'The center'), const Color(0xFF0E7C86), ph == null ? null : () => launchUrl(Uri.parse('tel:$ph'.replaceAll(' ', ''))))),
+            const SizedBox(width: 12),
+            Expanded(child: homeTile(Icons.chat, 'WhatsApp', t('Écrire au centre', 'Message the center'), const Color(0xFF25A244), ph == null ? null : () => launchUrl(Uri.parse('https://wa.me/${digits(ph)}'), mode: LaunchMode.externalApplication))),
+          ]);
+        }),
+        const SizedBox(height: 12),
+        box([
+          Text(t('Nos services', 'Our services'), style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Wrap(spacing: 6, children: [Chip(label: Text(t('Radiographie', 'X-ray'))), Chip(label: Text(t('Échographie', 'Ultrasound'))), Chip(label: Text(t('Analyses médicales', 'Medical tests')))]),
+        ]),
+      ]);
+}
+
+class SettingsTab extends StatelessWidget {
+  const SettingsTab({super.key});
+  @override
+  Widget build(BuildContext c) => ListView(padding: const EdgeInsets.all(14), children: [
+        box([
+          Text(t('Langue', 'Language'), style: const TextStyle(fontWeight: FontWeight.w700)),
+          ValueListenableBuilder<String>(
+            valueListenable: lang,
+            builder: (c, l, _) => Column(children: [
+              ListTile(contentPadding: EdgeInsets.zero, title: const Text('Français'), trailing: l == 'fr' ? const Icon(Icons.check_circle, color: lime) : null, onTap: () => setLang('fr')),
+              ListTile(contentPadding: EdgeInsets.zero, title: const Text('English'), trailing: l == 'en' ? const Icon(Icons.check_circle, color: lime) : null, onTap: () => setLang('en')),
+            ]),
+          ),
+        ]),
+        box([
+          Text('Notifications', style: const TextStyle(fontWeight: FontWeight.w700)),
+          ValueListenableBuilder<bool>(
+            valueListenable: notifReq,
+            builder: (c, v, _) => SwitchListTile(contentPadding: EdgeInsets.zero, value: v, title: Text(t('Avancement de mes demandes', 'Progress of my requests')), onChanged: (x) async {
+              notifReq.value = x;
+              (await SharedPreferences.getInstance()).setBool('notifReq', x);
+            }),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: notifMsg,
+            builder: (c, v, _) => SwitchListTile(contentPadding: EdgeInsets.zero, value: v, title: Text(t('Messages du centre', 'Messages from the center')), onChanged: (x) async {
+              notifMsg.value = x;
+              (await SharedPreferences.getInstance()).setBool('notifMsg', x);
+            }),
+          ),
+        ]),
+        box([
+          Text(t('Appels et contact', 'Calls and contact'), style: const TextStyle(fontWeight: FontWeight.w700)),
+          loadIn(q(db.from('contacts').select().order('id')), (cs) => Column(children: [for (final k in cs) contactTile(k)])),
+          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.videocam, color: navy), title: Text(t('Appel audio ou vidéo', 'Audio or video call')), subtitle: Text(t('Ouvrez une demande, puis touchez l’icône d’appel.', 'Open a request, then tap the call icon.'))),
+        ]),
+        box([
+          Text(t('Mon compte', 'My account'), style: const TextStyle(fontWeight: FontWeight.w700)),
+          loadIn(q(db.from('profiles').select('full_name, phone').eq('id', db.auth.currentUser!.id)), (l) => l.isEmpty ? const SizedBox() : ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.person, color: navy), title: Text('${l.first['full_name'] ?? ''}'), subtitle: Text('${l.first['phone'] ?? ''}'))),
+          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.key, color: navy), title: Text(t('J’ai un code d’invitation (personnel)', 'I have an invitation code (staff)')), onTap: () => redeem(c)),
+          OutlinedButton(onPressed: () => db.auth.signOut(), child: Text(t('Se déconnecter', 'Sign out'))),
+        ]),
+      ]);
 }
 
 class OrderTab extends StatefulWidget {
@@ -396,7 +763,7 @@ class MajorPage extends StatelessWidget {
         appBar: AppBar(
           title: const Text('Espace Major'),
           actions: [logoutBtn()],
-          bottom: const TabBar(tabs: [Tab(text: 'Demandes'), Tab(text: 'Examens'), Tab(text: 'Équipe')]),
+          bottom: const TabBar(labelColor: Colors.white, unselectedLabelColor: pale, indicatorColor: limeLight, tabs: [Tab(text: 'Demandes'), Tab(text: 'Examens'), Tab(text: 'Équipe')]),
         ),
         body: TabBarView(children: [MajorReqs(lab: lab!, service: 'laboratoire'), MajorExams(lab: lab!), Team(lab: lab!)]),
       ),
@@ -818,7 +1185,7 @@ class BellBtn extends StatelessWidget {
   Widget build(BuildContext c) => StreamBuilder<List<Map<String, dynamic>>>(
         stream: db.from('notifications').stream(primaryKey: ['id']).eq('user_id', db.auth.currentUser!.id),
         builder: (c, s) {
-          final n = (s.data ?? []).where((x) => x['read'] == false).length;
+          final n = (s.data ?? []).where((x) => x['read'] == false && notifOn(x)).length;
           return IconButton(
             tooltip: 'Notifications',
             icon: Badge(isLabelVisible: n > 0, label: Text('$n'), child: const Icon(Icons.notifications)),
@@ -850,7 +1217,7 @@ class _NotifPageState extends State<NotifPage> {
             if (!s.hasData) return const ShimmerList();
             if (s.data!.isEmpty) return const Center(child: Text('Aucune notification.'));
             return ListView(children: [
-              for (final n in s.data!)
+              for (final n in s.data!.where(notifOn))
                 ListTile(title: Text(n['title']), subtitle: Text('${n['body'] ?? ''}'), trailing: Text('${n['created_at']}'.substring(0, 10))),
             ]);
           },
@@ -923,14 +1290,14 @@ class AdminPage extends StatelessWidget {
           if (s.data!.isEmpty) return Scaffold(appBar: AppBar(actions: [logoutBtn()]), body: const Center(child: Text('Aucun centre créé.')));
           final lab = s.data!.first['id'] as String;
           return DefaultTabController(
-            length: 5,
+            length: 6,
             child: Scaffold(
               appBar: AppBar(
                 title: Text(isSuper ? 'Super Administrateur' : 'Promoteur'),
                 actions: [logoutBtn()],
-                bottom: const TabBar(isScrollable: true, tabs: [Tab(text: 'Laboratoire'), Tab(text: 'Imagerie'), Tab(text: 'Examens'), Tab(text: 'Équipe'), Tab(text: 'Centre')]),
+                bottom: const TabBar(labelColor: Colors.white, unselectedLabelColor: pale, indicatorColor: limeLight, isScrollable: true, tabs: [Tab(text: 'Tableau de bord'), Tab(text: 'Laboratoire'), Tab(text: 'Imagerie'), Tab(text: 'Examens'), Tab(text: 'Équipe'), Tab(text: 'Centre')]),
               ),
-              body: TabBarView(children: [MajorReqs(lab: lab, service: 'laboratoire'), MajorReqs(lab: lab, service: 'imagerie'), MajorExams(lab: lab), Team(lab: lab), CenterAdmin(lab: lab, isSuper: isSuper)]),
+              body: TabBarView(children: [const AdminHome(), MajorReqs(lab: lab, service: 'laboratoire'), MajorReqs(lab: lab, service: 'imagerie'), MajorExams(lab: lab), Team(lab: lab), CenterAdmin(lab: lab, isSuper: isSuper)]),
             ),
           );
         },
@@ -1035,4 +1402,57 @@ class ImagerieStaffPage extends StatelessWidget {
         appBar: AppBar(title: const Text('Imagerie médicale'), actions: [logoutBtn()]),
         body: lab == null ? const Center(child: Text('Aucun centre rattaché à ce compte.')) : MajorReqs(lab: lab!, service: 'imagerie'),
       );
+}
+
+// ---------- Tableau de bord Super Administrateur / Promoteur ----------
+class AdminHome extends StatelessWidget {
+  const AdminHome({super.key});
+  Widget stat(String n, String l, Color col) => Expanded(
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), boxShadow: const [BoxShadow(color: Color(0x1F123C80), blurRadius: 8, offset: Offset(0, 2))]),
+          child: Column(children: [Text(n, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: col)), Text(l, style: const TextStyle(fontSize: 11, color: Color(0xFF5A6B82)))]),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext c) {
+    void go(int i) => DefaultTabController.of(c).animateTo(i);
+    return Container(
+      color: soft,
+      child: ListView(padding: const EdgeInsets.all(14), children: [
+        loadIn(q(db.from('requests').select('service, status')), (r) {
+          final p = r.where((x) => x['status'] == 'pending').toList();
+          final lb = p.where((x) => x['service'] == 'laboratoire').length, im = p.where((x) => x['service'] == 'imagerie').length;
+          return Row(children: [stat('${p.length}', 'En attente', navy), const SizedBox(width: 10), stat('$lb', 'Laboratoire', lime), const SizedBox(width: 10), stat('$im', 'Imagerie', const Color(0xFF0E7C86))]);
+        }),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: homeTile(Icons.science, 'Laboratoire', 'Demandes et prélèvements', navy, () => go(1))),
+          const SizedBox(width: 12),
+          Expanded(child: homeTile(Icons.monitor_heart, 'Imagerie', 'Rendez-vous', lime, () => go(2))),
+        ]),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: homeTile(Icons.list_alt, 'Examens', 'Ajouter, retirer', const Color(0xFF0E7C86), () => go(3))),
+          const SizedBox(width: 12),
+          Expanded(child: homeTile(Icons.groups, 'Équipe', 'Majors, préleveurs, imagerie', const Color(0xFF7A4BB8), () => go(4))),
+        ]),
+        const SizedBox(height: 12),
+        box([
+          const Text('Responsables et personnel', style: TextStyle(fontWeight: FontWeight.w700)),
+          loadIn(q(db.from('profiles').select('full_name, role').inFilter('role', ['promoteur', 'major', 'imagerie', 'preleveur'])), (l) => Column(children: [
+                for (final p in l)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(backgroundColor: navy, child: Text('${p['full_name'] ?? '?'}'.isEmpty ? '?' : '${p['full_name']}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white))),
+                    title: Text('${p['full_name'] ?? ''}'),
+                    subtitle: Text(roleFr(p['role'])),
+                  ),
+              ])),
+        ]),
+        OutlinedButton(onPressed: () => go(5), child: const Text('Numéros de contact et gestion du centre')),
+      ]),
+    );
+  }
 }
