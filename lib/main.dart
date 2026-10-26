@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'config.dart';
@@ -159,7 +161,7 @@ class Gate extends StatelessWidget {
         stream: db.auth.onAuthStateChange,
         builder: (c, _) {
           if (db.auth.currentSession == null) return const AuthPage();
-          return ValueListenableBuilder<bool>(valueListenable: freshLogin, builder: (c, f, __) => f ? const WelcomeAfter() : const Home());
+          return ValueListenableBuilder<bool>(valueListenable: freshLogin, builder: (c, f, __) => f ? const WelcomeAfter() : const UpdateGuard(child: Home()));
         },
       );
 }
@@ -489,11 +491,12 @@ class _PatientPageState extends State<PatientPage> {
 
   @override
   Widget build(BuildContext c) {
-    final titles = [t('Accueil', 'Home'), t('Commander', 'Order'), t('Mes demandes', 'My requests'), t('Paramètres', 'Settings')];
+    final titles = [t('Accueil', 'Home'), t('Commander', 'Order'), t('Mes demandes', 'My requests'), t('Résultats', 'Results'), t('Paramètres', 'Settings')];
     final pages = <Widget>[
       PatientHome(onGo: (i) => setState(() => tab = i)),
       OrderTab(key: ValueKey(lab), lab: lab),
       const MyRequestsTab(),
+      const ResultsTab(),
       const SettingsTab(),
     ];
     return Scaffold(
@@ -519,7 +522,8 @@ class _PatientPageState extends State<PatientPage> {
           NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: titles[0]),
           NavigationDestination(icon: const Icon(Icons.add_circle_outline), selectedIcon: const Icon(Icons.add_circle), label: titles[1]),
           NavigationDestination(icon: const Icon(Icons.list_alt_outlined), selectedIcon: const Icon(Icons.list_alt), label: t('Demandes', 'Requests')),
-          NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: titles[3]),
+          NavigationDestination(icon: const Icon(Icons.image_outlined), selectedIcon: const Icon(Icons.image), label: titles[3]),
+          NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: titles[4]),
         ],
       ),
     );
@@ -755,20 +759,10 @@ class MajorPage extends StatelessWidget {
   final String? lab;
   const MajorPage({super.key, this.lab});
   @override
-  Widget build(BuildContext c) {
-    if (lab == null) return Scaffold(appBar: AppBar(actions: [logoutBtn()]), body: const Center(child: Text('Aucun laboratoire rattaché à ce compte.')));
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Espace Major'),
-          actions: [logoutBtn()],
-          bottom: const TabBar(labelColor: Colors.white, unselectedLabelColor: pale, indicatorColor: limeLight, tabs: [Tab(text: 'Demandes'), Tab(text: 'Examens'), Tab(text: 'Équipe')]),
-        ),
-        body: TabBarView(children: [MajorReqs(lab: lab!, service: 'laboratoire'), MajorExams(lab: lab!), Team(lab: lab!)]),
-      ),
-    );
-  }
+  Widget build(BuildContext c) => Scaffold(
+        appBar: AppBar(title: Text(t('Espace laboratoire', 'Laboratory space')), actions: [logoutBtn()]),
+        body: lab == null ? const Center(child: Text('Aucun laboratoire rattaché à ce compte.')) : ServiceSpace(lab: lab!, service: 'laboratoire', manage: true, isAdmin: false),
+      );
 }
 
 class MajorReqs extends StatefulWidget {
@@ -795,6 +789,7 @@ class _MajorReqsState extends State<MajorReqs> {
                   padding: const EdgeInsets.all(12),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     ...reqInfo(r),
+                    if (r['status'] != 'cancelled') OutlinedButton.icon(icon: const Icon(Icons.image), label: const Text('Envoyer le résultat'), onPressed: () => sendResult(c, r)),
                     if (r['mode'] == 'centre' && ['pending', 'accepted'].contains(r['status']))
                       Wrap(spacing: 8, children: [
                         if (r['status'] == 'pending') FilledButton(onPressed: () => act(r['id'], {'status': 'accepted'}), child: const Text('Confirmer le rendez-vous')),
@@ -824,7 +819,8 @@ class _MajorReqsState extends State<MajorReqs> {
 
 class MajorExams extends StatefulWidget {
   final String lab;
-  const MajorExams({super.key, required this.lab});
+  final String? service;
+  const MajorExams({super.key, required this.lab, this.service});
   @override
   State<MajorExams> createState() => _MajorExamsState();
 }
@@ -837,7 +833,8 @@ class _MajorExamsState extends State<MajorExams> {
 
   Future<void> addExam() async {
     final name = TextEditingController(), cond = TextEditingController();
-    String disc = disciplines.first;
+    final ds = discFor(widget.service);
+    String disc = ds.first;
     bool center = false;
     final ok = await showDialog<bool>(
       context: context,
@@ -849,7 +846,7 @@ class _MajorExamsState extends State<MajorExams> {
               TextField(controller: name, decoration: const InputDecoration(labelText: 'Nom de l’examen')),
               DropdownButtonFormField<String>(
                 value: disc,
-                items: [for (final x in disciplines) DropdownMenuItem(value: x, child: Text(x))],
+                items: [for (final x in ds) DropdownMenuItem(value: x, child: Text(x))],
                 onChanged: (v) => st(() => disc = v ?? disc),
                 decoration: const InputDecoration(labelText: 'Catégorie'),
               ),
@@ -891,7 +888,7 @@ class _MajorExamsState extends State<MajorExams> {
   @override
   Widget build(BuildContext c) => Scaffold(
         floatingActionButton: FloatingActionButton.extended(icon: const Icon(Icons.add), label: const Text('Ajouter un examen'), onPressed: addExam),
-        body: load(q(db.from('lab_exams').select('exam_id, active, custom_conditions, exams(name, conditions)').eq('lab_id', widget.lab)), (l) => lst([
+        body: load(q((widget.service == null ? db.from('lab_exams').select('exam_id, active, custom_conditions, exams!inner(name, conditions, service)').eq('lab_id', widget.lab) : db.from('lab_exams').select('exam_id, active, custom_conditions, exams!inner(name, conditions, service)').eq('lab_id', widget.lab).eq('exams.service', widget.service!))), (l) => lst([
               for (final x in l)
                 SwitchListTile(
                   value: x['active'] as bool,
@@ -1290,14 +1287,14 @@ class AdminPage extends StatelessWidget {
           if (s.data!.isEmpty) return Scaffold(appBar: AppBar(actions: [logoutBtn()]), body: const Center(child: Text('Aucun centre créé.')));
           final lab = s.data!.first['id'] as String;
           return DefaultTabController(
-            length: 6,
+            length: 4,
             child: Scaffold(
               appBar: AppBar(
                 title: Text(isSuper ? 'Super Administrateur' : 'Promoteur'),
                 actions: [logoutBtn()],
-                bottom: const TabBar(labelColor: Colors.white, unselectedLabelColor: pale, indicatorColor: limeLight, isScrollable: true, tabs: [Tab(text: 'Tableau de bord'), Tab(text: 'Laboratoire'), Tab(text: 'Imagerie'), Tab(text: 'Examens'), Tab(text: 'Équipe'), Tab(text: 'Centre')]),
+                bottom: const TabBar(labelColor: Colors.white, unselectedLabelColor: pale, indicatorColor: limeLight, isScrollable: true, tabs: [Tab(text: 'Tableau de bord'), Tab(text: 'Laboratoire'), Tab(text: 'Imagerie'), Tab(text: 'Centre')]),
               ),
-              body: TabBarView(children: [const AdminHome(), MajorReqs(lab: lab, service: 'laboratoire'), MajorReqs(lab: lab, service: 'imagerie'), MajorExams(lab: lab), Team(lab: lab), CenterAdmin(lab: lab, isSuper: isSuper)]),
+              body: TabBarView(children: [const AdminHome(), ServiceSpace(lab: lab, service: 'laboratoire', manage: true, isAdmin: true, isSuper: isSuper), ServiceSpace(lab: lab, service: 'imagerie', manage: true, isAdmin: true, isSuper: isSuper), CenterAdmin(lab: lab, isSuper: isSuper)]),
             ),
           );
         },
@@ -1360,13 +1357,13 @@ class _CenterAdminState extends State<CenterAdmin> {
                 ),
             ])),
         const SizedBox(height: 12),
-        const Text('Responsables', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        const Text('Promoteur', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         Wrap(spacing: 8, children: [
-          OutlinedButton(onPressed: () => nominate('major', 'Nommer un Major'), child: const Text('Nommer un Major')),
-          OutlinedButton(onPressed: () => nominate('imagerie', 'Ajouter du personnel d’imagerie'), child: const Text('Ajouter du personnel d’imagerie')),
+          
+          
           if (widget.isSuper) OutlinedButton(onPressed: () => nominate('promoteur', 'Nommer le promoteur'), child: const Text('Nommer le promoteur')),
         ]),
-        loadIn(q(db.from('profiles').select('id, full_name, phone, role').inFilter('role', ['major', 'promoteur', 'imagerie'])), (l) => Column(children: [
+        loadIn(q(db.from('profiles').select('id, full_name, phone, role').inFilter('role', ['promoteur'])), (l) => Column(children: [
               for (final p in l)
                 ListTile(
                   title: Text(p['full_name'] ?? ''),
@@ -1400,7 +1397,7 @@ class ImagerieStaffPage extends StatelessWidget {
   @override
   Widget build(BuildContext c) => Scaffold(
         appBar: AppBar(title: const Text('Imagerie médicale'), actions: [logoutBtn()]),
-        body: lab == null ? const Center(child: Text('Aucun centre rattaché à ce compte.')) : MajorReqs(lab: lab!, service: 'imagerie'),
+        body: lab == null ? const Center(child: Text('Aucun centre rattaché à ce compte.')) : ServiceSpace(lab: lab!, service: 'imagerie', manage: false, isAdmin: false),
       );
 }
 
@@ -1415,6 +1412,21 @@ class AdminHome extends StatelessWidget {
         ),
       );
 
+  Widget team(String title, List<String> roles, IconData ic, Color col) => box([
+        Row(children: [Icon(ic, color: col), const SizedBox(width: 8), Text(title, style: const TextStyle(fontWeight: FontWeight.w700))]),
+        loadIn(q(db.from('profiles').select('full_name, role').inFilter('role', roles)), (l) => Column(children: [
+              if (l.isEmpty) const Padding(padding: EdgeInsets.all(8), child: Text('Personne pour le moment.')),
+              for (final p in l)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: CircleAvatar(radius: 16, backgroundColor: col, child: Text('${p['full_name'] ?? '?'}'.isEmpty ? '?' : '${p['full_name']}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white))),
+                  title: Text('${p['full_name'] ?? ''}'),
+                  subtitle: Text(roleFr(p['role'])),
+                ),
+            ])),
+      ]);
+
   @override
   Widget build(BuildContext c) {
     void go(int i) => DefaultTabController.of(c).animateTo(i);
@@ -1428,31 +1440,315 @@ class AdminHome extends StatelessWidget {
         }),
         const SizedBox(height: 12),
         Row(children: [
-          Expanded(child: homeTile(Icons.science, 'Laboratoire', 'Demandes et prélèvements', navy, () => go(1))),
+          Expanded(child: homeTile(Icons.science, 'Laboratoire', 'Demandes, résultats, équipe', navy, () => go(1))),
           const SizedBox(width: 12),
-          Expanded(child: homeTile(Icons.monitor_heart, 'Imagerie', 'Rendez-vous', lime, () => go(2))),
+          Expanded(child: homeTile(Icons.monitor_heart, 'Imagerie', 'Rendez-vous, résultats', lime, () => go(2))),
         ]),
         const SizedBox(height: 12),
-        Row(children: [
-          Expanded(child: homeTile(Icons.list_alt, 'Examens', 'Ajouter, retirer', const Color(0xFF0E7C86), () => go(3))),
-          const SizedBox(width: 12),
-          Expanded(child: homeTile(Icons.groups, 'Équipe', 'Majors, préleveurs, imagerie', const Color(0xFF7A4BB8), () => go(4))),
-        ]),
+        homeTile(Icons.apartment, 'Centre', 'Promoteur, contacts, suspension', const Color(0xFF7A4BB8), () => go(3)),
         const SizedBox(height: 12),
-        box([
-          const Text('Responsables et personnel', style: TextStyle(fontWeight: FontWeight.w700)),
-          loadIn(q(db.from('profiles').select('full_name, role').inFilter('role', ['promoteur', 'major', 'imagerie', 'preleveur'])), (l) => Column(children: [
-                for (final p in l)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: CircleAvatar(backgroundColor: navy, child: Text('${p['full_name'] ?? '?'}'.isEmpty ? '?' : '${p['full_name']}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white))),
-                    title: Text('${p['full_name'] ?? ''}'),
-                    subtitle: Text(roleFr(p['role'])),
-                  ),
-              ])),
-        ]),
-        OutlinedButton(onPressed: () => go(5), child: const Text('Numéros de contact et gestion du centre')),
+        team('Laboratoire : Major et préleveurs', ['major', 'preleveur'], Icons.science, navy),
+        team('Imagerie médicale', ['imagerie'], Icons.monitor_heart, lime),
       ]),
     );
   }
+}
+
+// ---------- Avis de mise à jour (Android) ----------
+class UpdateGuard extends StatefulWidget {
+  final Widget child;
+  const UpdateGuard({super.key, required this.child});
+  @override
+  State<UpdateGuard> createState() => _UpdateGuardState();
+}
+
+class _UpdateGuardState extends State<UpdateGuard> {
+  @override
+  void initState() {
+    super.initState();
+    if (!kIsWeb) _check();
+  }
+
+  Future<void> _check() async {
+    try {
+      final r = await db.from('app_config').select().eq('id', 1).limit(1);
+      if ((r as List).isEmpty) return;
+      final latest = (r.first['latest_build'] as num).toInt();
+      final url = '${r.first['download_url'] ?? ''}';
+      if (latest > kBuild && mounted) {
+        showDialog(
+          context: context,
+          builder: (d) => AlertDialog(
+            title: Text(t('Nouvelle version disponible', 'New version available')),
+            content: Text(t('Une version plus récente de Saint-Victor est disponible. Téléchargez-la puis installez-la par-dessus l’ancienne : vos données sont conservées.', 'A newer version of Saint-Victor is available. Download it and install it over the old one: your data is kept.')),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(d), child: Text(t('Plus tard', 'Later'))),
+              if (url.isNotEmpty) FilledButton(onPressed: () { Navigator.pop(d); launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication); }, child: Text(t('Mettre à jour', 'Update'))),
+            ],
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext c) => widget.child;
+}
+
+// ---------- Espaces séparés : laboratoire et imagerie ----------
+List<String> discFor(String? service) => service == 'imagerie'
+    ? ['Imagerie - Radiographie', 'Imagerie - Échographie']
+    : service == 'laboratoire'
+        ? ['Biochimie', 'Hématologie', 'Bactériologie', 'Parasitologie', 'Immuno-sérologie']
+        : disciplines;
+String day(dynamic s) => '$s'.substring(0, 10);
+
+Future<bool> runAny(BuildContext c, Future<dynamic> Function() f, [String? ok]) async {
+  try {
+    await f();
+    if (ok != null && c.mounted) snack(c, ok);
+    return true;
+  } catch (e) {
+    if (c.mounted) snack(c, 'Erreur : $e');
+    return false;
+  }
+}
+
+class ServiceSpace extends StatefulWidget {
+  final String lab, service;
+  final bool manage, isAdmin, isSuper;
+  const ServiceSpace({super.key, required this.lab, required this.service, required this.manage, required this.isAdmin, this.isSuper = false});
+  @override
+  State<ServiceSpace> createState() => _ServiceSpaceState();
+}
+
+class _ServiceSpaceState extends State<ServiceSpace> {
+  int sub = 0;
+  @override
+  Widget build(BuildContext c) {
+    final labels = ['Demandes', 'Résultats', if (widget.manage) 'Examens', if (widget.manage) 'Équipe'];
+    final Widget body = switch (sub) {
+      0 => MajorReqs(lab: widget.lab, service: widget.service),
+      1 => ResultsStaff(service: widget.service),
+      2 => MajorExams(lab: widget.lab, service: widget.service),
+      _ => StaffList(lab: widget.lab, service: widget.service, isAdmin: widget.isAdmin),
+    };
+    return Column(children: [
+      SizedBox(
+        height: 54,
+        child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(10), children: [
+          for (var i = 0; i < labels.length; i++) Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(labels[i]), selected: sub == i, onSelected: (_) => setState(() => sub = i))),
+        ]),
+      ),
+      Expanded(child: body),
+    ]);
+  }
+}
+
+class StaffList extends StatefulWidget {
+  final String lab, service;
+  final bool isAdmin;
+  const StaffList({super.key, required this.lab, required this.service, required this.isAdmin});
+  @override
+  State<StaffList> createState() => _StaffListState();
+}
+
+class _StaffListState extends State<StaffList> {
+  Future<void> go(Future<dynamic> Function() f, [String? ok]) async {
+    await run(context, f, ok);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> add(String role, String title) async {
+    final e = await ask(context, title, 'Numéro de téléphone de son compte');
+    if (e != null && e.isNotEmpty) go(() => db.rpc('assign_user', params: {'p_email': normPhone(e), 'p_role': role, 'p_lab': widget.lab}), 'Fait.');
+  }
+
+  Future<void> invite() async {
+    try {
+      final code = await db.rpc('create_invite');
+      if (mounted) {
+        await showDialog(context: context, builder: (d) => AlertDialog(title: const Text('Code d’invitation'), content: SelectableText('$code', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)), actions: [TextButton(onPressed: () => Navigator.pop(d), child: const Text('Fermer'))]));
+      }
+    } on PostgrestException catch (e) {
+      if (mounted) snack(context, e.message);
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    final lab = widget.service == 'laboratoire';
+    return ListView(padding: const EdgeInsets.all(12), children: [
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        if (lab && widget.isAdmin) OutlinedButton(onPressed: () => add('major', 'Nommer un Major'), child: const Text('Nommer un Major')),
+        if (lab) OutlinedButton(onPressed: () => add('preleveur', 'Ajouter un préleveur'), child: const Text('Ajouter un préleveur')),
+        if (lab) OutlinedButton(onPressed: invite, child: const Text('Code d’invitation')),
+        if (!lab && widget.isAdmin) OutlinedButton(onPressed: () => add('imagerie', 'Ajouter du personnel d’imagerie'), child: const Text('Ajouter du personnel d’imagerie')),
+      ]),
+      loadIn(q(db.from('profiles').select('id, full_name, phone, role').eq('lab_id', widget.lab).inFilter('role', lab ? ['major', 'preleveur'] : ['imagerie'])), (l) => Column(children: [
+            if (l.isEmpty) const Padding(padding: EdgeInsets.all(20), child: Text('Personne pour le moment.')),
+            for (final p in l)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(backgroundColor: navy, child: Text('${p['full_name'] ?? '?'}'.isEmpty ? '?' : '${p['full_name']}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white))),
+                title: Text('${p['full_name'] ?? ''}'),
+                subtitle: Text('${roleFr(p['role'])} · ${p['phone'] ?? ''}'),
+                trailing: (p['role'] == 'preleveur' || widget.isAdmin) ? IconButton(icon: const Icon(Icons.person_remove), tooltip: 'Retirer', onPressed: () => go(() => db.rpc('release_user', params: {'p_user': p['id']}), 'Retiré.')) : null,
+              ),
+          ])),
+    ]);
+  }
+}
+
+// ---------- Résultats (images haute définition) ----------
+Future<void> sendResult(BuildContext c, Map<String, dynamic> r) async {
+  final src = await showModalBottomSheet<String>(
+    context: c,
+    builder: (d) => SafeArea(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        ListTile(leading: const Icon(Icons.photo_library), title: const Text('Choisir dans la galerie'), onTap: () => Navigator.pop(d, 'gal')),
+        ListTile(leading: const Icon(Icons.photo_camera), title: const Text('Prendre une photo'), onTap: () => Navigator.pop(d, 'cam')),
+      ]),
+    ),
+  );
+  if (src == null) return;
+  final picker = ImagePicker();
+  List<XFile> files = [];
+  if (src == 'cam') {
+    final x = await picker.pickImage(source: ImageSource.camera, imageQuality: 100);
+    if (x != null) files = [x];
+  } else {
+    files = await picker.pickMultiImage(imageQuality: 100);
+  }
+  if (files.isEmpty || !c.mounted) return;
+  final who = '${(r['patient'] ?? {})['full_name'] ?? 'ce patient'}';
+  final yes = await showDialog<bool>(
+    context: c,
+    builder: (d) => AlertDialog(
+      title: const Text('Envoyer le résultat ?'),
+      content: Text('${files.length} image(s) seront envoyées à $who. Vérifiez que c’est le bon patient : il pourra les voir et les télécharger.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Annuler')),
+        FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Envoyer')),
+      ],
+    ),
+  );
+  if (yes != true || !c.mounted) return;
+  final pid = r['patient_id'], rid = r['id'], service = r['service'];
+  final title = (r['exam_names'] as List).join(', ');
+  var n = 0;
+  for (final f in files) {
+    final png = f.name.toLowerCase().endsWith('.png');
+    final path = '$pid/$rid/${DateTime.now().microsecondsSinceEpoch}_$n.${png ? 'png' : 'jpg'}';
+    final bytes = await f.readAsBytes();
+    final good = await runAny(c, () async {
+      await db.storage.from('resultats').uploadBinary(path, bytes, fileOptions: FileOptions(contentType: png ? 'image/png' : 'image/jpeg'));
+      await db.from('results').insert({'patient_id': pid, 'request_id': rid, 'service': service, 'title': title, 'file_path': path});
+    });
+    if (!good) return;
+    n++;
+  }
+  await runAny(c, () => db.from('requests').update({'status': 'done'}).eq('id', rid));
+  if (c.mounted) snack(c, 'Résultat envoyé au patient ($n image(s)).');
+}
+
+Future<void> openResult(BuildContext c, String path, {bool download = false}) async {
+  try {
+    final url = await db.storage.from('resultats').createSignedUrl(path, 600);
+    if (!c.mounted) return;
+    if (download) {
+      await launchUrl(Uri.parse('$url&download=resultat-saint-victor.jpg'), mode: LaunchMode.externalApplication);
+    } else {
+      Navigator.push(c, MaterialPageRoute(builder: (_) => ResultViewer(url: url)));
+    }
+  } catch (e) {
+    if (c.mounted) snack(c, 'Erreur : $e');
+  }
+}
+
+class ResultViewer extends StatelessWidget {
+  final String url;
+  const ResultViewer({super.key, required this.url});
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          title: Text(t('Résultat', 'Result')),
+          actions: [IconButton(icon: const Icon(Icons.download), tooltip: t('Télécharger', 'Download'), onPressed: () => launchUrl(Uri.parse('$url&download=resultat-saint-victor.jpg'), mode: LaunchMode.externalApplication))],
+        ),
+        body: InteractiveViewer(
+          maxScale: 8,
+          child: Center(
+            child: Image.network(url, loadingBuilder: (c, w, p) => p == null ? w : const Center(child: CircularProgressIndicator()), errorBuilder: (c, e, s) => const Text('Image indisponible', style: TextStyle(color: Colors.white))),
+          ),
+        ),
+      );
+}
+
+class ResultsTab extends StatefulWidget {
+  const ResultsTab({super.key});
+  @override
+  State<ResultsTab> createState() => _ResultsTabState();
+}
+
+class _ResultsTabState extends State<ResultsTab> {
+  @override
+  Widget build(BuildContext c) => load(q(db.from('results').select('id, title, file_path, service, created_at').order('created_at', ascending: false)), (l) => lst([
+        if (l.isEmpty) Padding(padding: const EdgeInsets.all(24), child: Text(t('Vos résultats apparaîtront ici dès que le centre les aura envoyés.', 'Your results will appear here as soon as the center sends them.'))),
+        for (final x in l)
+          box([
+            Row(children: [Icon(x['service'] == 'imagerie' ? Icons.monitor_heart : Icons.science, color: navy), const SizedBox(width: 8), Expanded(child: Text('${x['title']}', style: const TextStyle(fontWeight: FontWeight.w700)))]),
+            Text(day(x['created_at']), style: const TextStyle(color: Color(0xFF5A6B82), fontSize: 12)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, children: [
+              FilledButton.icon(icon: const Icon(Icons.visibility), label: Text(t('Voir', 'View')), onPressed: () => openResult(c, x['file_path'])),
+              OutlinedButton.icon(icon: const Icon(Icons.download), label: Text(t('Télécharger', 'Download')), onPressed: () => openResult(c, x['file_path'], download: true)),
+            ]),
+          ]),
+      ], () async => setState(() {})));
+}
+
+class ResultsStaff extends StatefulWidget {
+  final String service;
+  const ResultsStaff({super.key, required this.service});
+  @override
+  State<ResultsStaff> createState() => _ResultsStaffState();
+}
+
+class _ResultsStaffState extends State<ResultsStaff> {
+  Future<void> del(Map<String, dynamic> x) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Retirer ce résultat ?'),
+        content: const Text('Le patient ne pourra plus le voir. À utiliser si l’image a été envoyée au mauvais patient.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Retirer')),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    await runAny(context, () async {
+      await db.storage.from('resultats').remove([x['file_path']]);
+      await db.from('results').delete().eq('id', x['id']);
+    }, 'Résultat retiré.');
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext c) => load(q(db.from('results').select('id, title, file_path, created_at, patient:profiles!patient_id(full_name)').eq('service', widget.service).order('created_at', ascending: false)), (l) => lst([
+        for (final x in l)
+          Card(
+            margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            child: ListTile(
+              leading: const Icon(Icons.image, color: navy),
+              title: Text('${(x['patient'] ?? {})['full_name'] ?? ''}'),
+              subtitle: Text('${x['title']}\n${day(x['created_at'])}'),
+              isThreeLine: true,
+              onTap: () => openResult(c, x['file_path']),
+              trailing: IconButton(icon: const Icon(Icons.delete_outline), tooltip: 'Retirer', onPressed: () => del(x)),
+            ),
+          ),
+      ], () async => setState(() {})));
 }
