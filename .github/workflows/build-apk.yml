@@ -1,80 +1,32 @@
-
-name: Build Apk st Victor
-
+name: Build APK Saint-Victor
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
-
+  push:
+    branches: [ main ]
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Récupérer le code
-        uses: actions/checkout@v4
-
-      - name: Installer Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Installer Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: Préparer Android
+      - uses: actions/checkout@v4
+      - name: Verifier la configuration
         run: |
-          flutter create --platforms=android --project-name santelab --org cm.stvictor .
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-
-          permissions = [
-              '  <uses-permission android:name="android.permission.INTERNET"/>',
-              '  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>',
-          ]
-
-          for permission in permissions:
-              if permission not in s:
-                  s = s.replace(
-                      '<application',
-                      permission + '\n  <application',
-                      1
-                  )
-
-          s = s.replace(
-              'android:label="Flutter"',
-              'android:label="St Victor Bafia"'
-          )
-
-          p.write_text(s)
-          PY
-
-      - name: Installer les dépendances
-        run: flutter pub get
-
-      - name: Générer l'icône
+          if grep -q "COLLEZ_ICI" lib/config.dart; then echo "ERREUR : le fichier lib/config.dart n'est pas rempli (adresse et cle Supabase)."; exit 1; fi
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: flutter create . --platforms=android --project-name santelab --org cm.stvictor
+      - name: Permissions et nom de l'application
+        run: |
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#android:label="[^"]*"#android:label="Saint-Victor"#' android/app/src/main/AndroidManifest.xml
+      - run: flutter pub get
+      - name: Icone de l'application
         continue-on-error: true
         run: dart run flutter_launcher_icons
-
-      - name: Construire l'APK
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          flutter build apk --release \
-            --dart-define="SUPABASE_URL=$SUPABASE_URL" \
-            --dart-define="SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
-
-      - name: Télécharger l'APK
-        uses: actions/upload-artifact@v4
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
         with:
-          name: StVictor-APK
+          name: SaintVictor-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
