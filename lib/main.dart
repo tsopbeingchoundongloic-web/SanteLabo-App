@@ -6,7 +6,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'config.dart';
+
+part 'pro.dart';
 
 SupabaseClient get db => Supabase.instance.client;
 
@@ -46,7 +49,7 @@ String spaceName(dynamic role) => {
       'superadmin': 'Super Administrateur',
       'promoteur': 'Promoteur',
       'major': t('Espace laboratoire', 'Laboratory space'),
-      'preleveur': t('Préleveur à domicile', 'Home sampler'),
+      'preleveur': t('Espace laboratoire', 'Laboratory space'),
       'imagerie': t('Espace imagerie médicale', 'Medical imaging space'),
     }[role] ?? '$role';
 
@@ -412,15 +415,14 @@ class Home extends StatelessWidget {
           final p = s.data!;
           switch (p['role']) {
             case 'superadmin':
-              return const AdminPage(isSuper: true);
+              return const SuperShell();
             case 'promoteur':
-              return const AdminPage(isSuper: false);
+              return const DirectionPage();
             case 'major':
-              return MajorPage(lab: p['lab_id']);
             case 'preleveur':
-              return const MissionsPage();
+              return LabSpace(lab: p['lab_id']);
             case 'imagerie':
-              return ImagerieStaffPage(lab: p['lab_id']);
+              return ImagerieSpace(lab: p['lab_id']);
             default:
               return PatientPage(favLab: p['fav_lab_id']);
           }
@@ -1117,65 +1119,6 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
-  final t = TextEditingController();
-  late final Stream<List<Map<String, dynamic>>> st = db.from('messages').stream(primaryKey: ['id']).eq('request_id', widget.id).order('created_at', ascending: true);
-
-  Future<void> send(String body) async {
-    if (body.trim().isEmpty) return;
-    t.clear();
-    await run(context, () => db.from('messages').insert({'request_id': widget.id, 'sender_id': db.auth.currentUser!.id, 'body': body.trim()}));
-  }
-
-  Future<void> call() async {
-    final url = 'https://meet.jit.si/SanteLab-${widget.id.replaceAll('-', '')}';
-    await send('Appel audio/vidéo : $url');
-    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-  }
-
-  @override
-  Widget build(BuildContext c) => Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title, overflow: TextOverflow.ellipsis),
-          actions: [IconButton(icon: const Icon(Icons.call), tooltip: 'Appeler', onPressed: call)],
-        ),
-        body: Column(children: [
-          Expanded(
-            child: StreamBuilder<List<Map<String, dynamic>>>(
-              stream: st,
-              builder: (c, s) {
-                if (s.hasError) return Center(child: Text('Erreur : ${s.error}'));
-                if (!s.hasData) return const ShimmerList();
-                final l = s.data!;
-                return ListView(padding: const EdgeInsets.all(8), children: [
-                  for (final m in l)
-                    Align(
-                      alignment: m['sender_id'] == db.auth.currentUser!.id ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Card(
-                        color: m['sender_id'] == db.auth.currentUser!.id ? const Color(0xFFDDEFB5) : Colors.white,
-                        child: InkWell(
-                          onTap: () {
-                            final u = RegExp(r'https://\S+').firstMatch('${m['body']}');
-                            if (u != null) launchUrl(Uri.parse(u.group(0)!), mode: LaunchMode.externalApplication);
-                          },
-                          child: Padding(padding: const EdgeInsets.all(10), child: Text('${m['body']}')),
-                        ),
-                      ),
-                    ),
-                ]);
-              },
-            ),
-          ),
-          SafeArea(
-            child: Row(children: [
-              Expanded(child: Padding(padding: const EdgeInsets.all(8), child: TextField(controller: t, decoration: const InputDecoration(hintText: 'Votre message'), onSubmitted: send))),
-              IconButton(icon: const Icon(Icons.send), onPressed: () => send(t.text)),
-            ]),
-          ),
-        ]),
-      );
-}
-
 class BellBtn extends StatelessWidget {
   const BellBtn({super.key});
   @override
@@ -1389,7 +1332,7 @@ class _CenterAdminState extends State<CenterAdmin> {
 }
 
 // ---------- Personnel d'imagerie ----------
-String roleFr(dynamic r) => const {'promoteur': 'Promoteur', 'imagerie': 'Imagerie', 'major': 'Major', 'preleveur': 'Préleveur'}[r] ?? '$r';
+String roleFr(dynamic r) => const {'promoteur': 'Promoteur', 'superadmin': 'Super Administrateur', 'imagerie': 'Imagerie médicale', 'major': 'Laboratoire', 'preleveur': 'Laboratoire'}[r] ?? '$r';
 
 class ImagerieStaffPage extends StatelessWidget {
   final String? lab;
@@ -1469,18 +1412,35 @@ class _UpdateGuardState extends State<UpdateGuard> {
     if (!kIsWeb) _check();
   }
 
+  Future<Map<String, dynamic>?> _fromRelease() async {
+    try {
+      final base = 'https://github.com/$kRepo/releases/latest/download';
+      final r = await http.get(Uri.parse('$base/version.txt')).timeout(const Duration(seconds: 6));
+      if (r.statusCode != 200) return null;
+      final n = int.tryParse(r.body.trim());
+      if (n == null) return null;
+      return {'build': n, 'url': '$base/SaintVictor.apk'};
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _check() async {
     try {
-      final r = await db.from('app_config').select().eq('id', 1).limit(1);
-      if ((r as List).isEmpty) return;
-      final latest = (r.first['latest_build'] as num).toInt();
-      final url = '${r.first['download_url'] ?? ''}';
+      var info = await _fromRelease();
+      if (info == null) {
+        final r = await db.from('app_config').select().eq('id', 1).limit(1);
+        if ((r as List).isEmpty) return;
+        info = {'build': (r.first['latest_build'] as num).toInt(), 'url': '${r.first['download_url'] ?? ''}'};
+      }
+      final latest = info['build'] as int;
+      final url = '${info['url']}';
       if (latest > kBuild && mounted) {
         showDialog(
           context: context,
           builder: (d) => AlertDialog(
             title: Text(t('Nouvelle version disponible', 'New version available')),
-            content: Text(t('Une version plus récente de Saint-Victor est disponible. Téléchargez-la puis installez-la par-dessus l’ancienne : vos données sont conservées.', 'A newer version of Saint-Victor is available. Download it and install it over the old one: your data is kept.')),
+            content: Text(t('Une version plus récente de Saint-Victor est disponible. Appuyez sur « Mettre à jour », puis installez-la par-dessus l’ancienne : il n’y a rien à désinstaller et vos données sont conservées.', 'A newer version of Saint-Victor is available. Tap "Update", then install it over the old one: nothing to uninstall and your data is kept.')),
             actions: [
               TextButton(onPressed: () => Navigator.pop(d), child: Text(t('Plus tard', 'Later'))),
               if (url.isNotEmpty) FilledButton(onPressed: () { Navigator.pop(d); launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication); }, child: Text(t('Mettre à jour', 'Update'))),
@@ -1578,13 +1538,11 @@ class _StaffListState extends State<StaffList> {
   @override
   Widget build(BuildContext c) {
     final lab = widget.service == 'laboratoire';
+    final title = lab ? 'Ajouter un agent du laboratoire' : 'Ajouter du personnel d’imagerie';
     return ListView(padding: const EdgeInsets.all(12), children: [
-      Wrap(spacing: 8, runSpacing: 8, children: [
-        if (lab && widget.isAdmin) OutlinedButton(onPressed: () => add('major', 'Nommer un Major'), child: const Text('Nommer un Major')),
-        if (lab) OutlinedButton(onPressed: () => add('preleveur', 'Ajouter un préleveur'), child: const Text('Ajouter un préleveur')),
-        if (lab) OutlinedButton(onPressed: invite, child: const Text('Code d’invitation')),
-        if (!lab && widget.isAdmin) OutlinedButton(onPressed: () => add('imagerie', 'Ajouter du personnel d’imagerie'), child: const Text('Ajouter du personnel d’imagerie')),
-      ]),
+      if (widget.isAdmin)
+        FilledButton.icon(icon: const Icon(Icons.person_add_alt_1_rounded), label: Text(title), onPressed: () => add(lab ? 'major' : 'imagerie', title)),
+      if (widget.isAdmin) const Padding(padding: EdgeInsets.only(top: 6), child: Text('La personne doit d’abord créer son compte dans l’application. Vous saisissez ensuite son numéro de téléphone.', style: TextStyle(fontSize: 12, color: Color(0xFF5A6B82)))),
       loadIn(q(db.from('profiles').select('id, full_name, phone, role').eq('lab_id', widget.lab).inFilter('role', lab ? ['major', 'preleveur'] : ['imagerie'])), (l) => Column(children: [
             if (l.isEmpty) const Padding(padding: EdgeInsets.all(20), child: Text('Personne pour le moment.')),
             for (final p in l)
@@ -1593,7 +1551,7 @@ class _StaffListState extends State<StaffList> {
                 leading: CircleAvatar(backgroundColor: navy, child: Text('${p['full_name'] ?? '?'}'.isEmpty ? '?' : '${p['full_name']}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white))),
                 title: Text('${p['full_name'] ?? ''}'),
                 subtitle: Text('${roleFr(p['role'])} · ${p['phone'] ?? ''}'),
-                trailing: (p['role'] == 'preleveur' || widget.isAdmin) ? IconButton(icon: const Icon(Icons.person_remove), tooltip: 'Retirer', onPressed: () => go(() => db.rpc('release_user', params: {'p_user': p['id']}), 'Retiré.')) : null,
+                trailing: widget.isAdmin ? IconButton(icon: const Icon(Icons.person_remove), tooltip: 'Retirer', onPressed: () => go(() => db.rpc('release_user', params: {'p_user': p['id']}), 'Retiré.')) : null,
               ),
           ])),
     ]);
