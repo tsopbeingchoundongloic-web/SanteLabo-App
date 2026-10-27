@@ -3,6 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -28,12 +32,24 @@ jobs:
       - name: Icone de l'application
         continue-on-error: true
         run: dart run flutter_launcher_icons
-      - run: flutter build apk --release
+      - name: Adresse du depot (mises a jour dans l'application)
+        run: sed -i "s#REPO_AUTO#${{ github.repository }}#" lib/config.dart
+      - run: flutter build apk --release --build-number=${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
           name: SaintVictor-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+      - name: Publier la mise a jour (lien permanent de telechargement)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          B=$(grep -o 'kBuild = [0-9]*' lib/config.dart | grep -o '[0-9]*$')
+          cp build/app/outputs/flutter-apk/app-release.apk SaintVictor.apk
+          echo "$B" > version.txt
+          gh release delete latest --cleanup-tag -y || true
+          gh release create latest SaintVictor.apk version.txt --title "Saint-Victor version $B" --notes "Version $B de l'application" --latest
   web:
     runs-on: ubuntu-latest
     steps:
@@ -59,9 +75,22 @@ jobs:
               theme_color: "#123C80"
           EOT
           dart run flutter_launcher_icons -f icons_web.yaml
-      - run: flutter build web --release
+      - run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
       - uses: actions/upload-artifact@v4
         with:
           name: SaintVictor-Web-iPhone
           path: build/web
           if-no-files-found: error
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+  deploy-web:
+    needs: web
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
