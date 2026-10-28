@@ -97,3 +97,37 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+  deploy-firebase:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: flutter create . --platforms=web --project-name santelab --org cm.stvictor
+      - name: Nom de la version web
+        run: sed -i 's/santelab/Saint-Victor/g' web/index.html web/manifest.json
+      - run: flutter pub get
+      - name: Icones de la version web
+        continue-on-error: true
+        run: |
+          cat > icons_web.yaml <<'EOT'
+          flutter_launcher_icons:
+            web:
+              generate: true
+              image_path: "assets/icon.png"
+              background_color: "#FFFFFF"
+              theme_color: "#123C80"
+          EOT
+          dart run flutter_launcher_icons -f icons_web.yaml
+      - run: flutter build web --release --base-href "/" --no-web-resources-cdn
+      - name: Configuration Firebase Hosting
+        run: |
+          cat > firebase.json <<'EOT'
+          {"hosting":{"public":"build/web","ignore":["firebase.json","**/.*","**/node_modules/**"],"rewrites":[{"source":"**","destination":"/index.html"}]}}
+          EOT
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: saint-victor-bafia-9e5da
+          channelId: live
