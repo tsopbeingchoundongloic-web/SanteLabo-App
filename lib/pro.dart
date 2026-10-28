@@ -582,6 +582,7 @@ class _ReqBoardState extends State<ReqBoard> {
               onPressed: () => launchUrl(Uri.parse(mapsUrl(r)), mode: LaunchMode.externalApplication),
             ),
           if (!center && open) OutlinedButton(onPressed: () => showDistance(c, r), child: const Text('Distance')),
+          if (r['prescription_path'] != null) OutlinedButton.icon(icon: const Icon(Icons.description_rounded, size: 18), label: const Text('Ordonnance'), onPressed: () => openPrescription(c, '${r['prescription_path']}')),
           OutlinedButton.icon(icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18), label: const Text('Message'), onPressed: () => openChat(c, r)),
           if (open)
             TextButton(
@@ -750,7 +751,8 @@ class _ResultsBoardState extends State<ResultsBoard> {
 // ---------- Direction : calcul des chiffres ----------
 class DirStats {
   int total = 0, done = 0, pending = 0, doing = 0, cancelled = 0, results = 0, patients = 0, home = 0, center = 0;
-  double avgHours = -1;
+  double avgHours = -1, avgStars = 0;
+  int ratings = 0;
   final byService = <String, int>{'laboratoire': 0, 'imagerie': 0};
   final topCount = <String, int>{};
   final trendLabels = <String>[];
@@ -774,7 +776,11 @@ Future<Map<String, List<Map<String, dynamic>>>> loadDir() async {
       .order('created_at', ascending: false)
       .limit(1000));
   final res = await q(db.from('results').select('id, request_id, service, created_at, created_by').gte('created_at', since).order('created_at', ascending: false).limit(1000));
-  return {'requests': reqs, 'results': res};
+  List<Map<String, dynamic>> fb = [];
+  try {
+    fb = await q(db.from('feedback').select('stars, created_at').gte('created_at', since).limit(1000));
+  } catch (_) {}
+  return {'requests': reqs, 'results': res, 'feedback': fb};
 }
 
 DateTime periodStart(int period) {
@@ -846,6 +852,9 @@ DirStats computeDir(Map<String, List<Map<String, dynamic>>> raw, int period) {
   s.patients = pats.length;
   s.avgHours = hn == 0 ? -1 : hours / hn;
   s.results = raw['results']!.where((x) => inP(x['created_at'])).length;
+  final fbs = (raw['feedback'] ?? <Map<String, dynamic>>[]).where((x) => inP(x['created_at'])).toList();
+  s.ratings = fbs.length;
+  s.avgStars = fbs.isEmpty ? 0.0 : fbs.fold<num>(0, (a, x) => a + (x['stars'] as num)) / fbs.length;
   final days = period <= 7 ? 7 : 30;
   final nowT = DateTime.now();
   final today = DateTime(nowT.year, nowT.month, nowT.day);
@@ -880,6 +889,7 @@ Future<void> copyReport(BuildContext c, int period, String label) async {
       ..writeln('Au centre : ${d.center} · À domicile : ${d.home}')
       ..writeln('Résultats envoyés : ${d.results}')
       ..writeln('Patients différents : ${d.patients}')
+      ..writeln('Satisfaction des patients : ${d.ratings == 0 ? 'aucun avis' : '${d.avgStars.toStringAsFixed(1)}/5 (${d.ratings} avis)'}')
       ..writeln('Délai moyen de traitement : ${delayText(d.avgHours)}')
       ..writeln('Points de contrôle : ${al.lateReqs.length} en retard, ${al.noAgent.length} sans agent, ${al.noResult.length} terminées sans résultat');
     await Clipboard.setData(ClipboardData(text: b.toString()));
@@ -1015,6 +1025,7 @@ class _DirDashboardState extends State<DirDashboard> {
               kpiRow([kpiCard(Icons.assignment_rounded, '${d.total}', 'Demandes', navy), kpiCard(Icons.check_circle_rounded, '${d.done}', 'Terminées', green)]),
               kpiRow([kpiCard(Icons.pending_actions_rounded, '${d.pending}', 'En attente', amber), kpiCard(Icons.cancel_rounded, '${d.cancelled}', 'Annulées ($cancelRate)', danger)]),
               kpiRow([kpiCard(Icons.send_rounded, '${d.results}', 'Résultats envoyés', teal), kpiCard(Icons.people_rounded, '${d.patients}', 'Patients différents', navy)]),
+              kpiRow([kpiCard(Icons.star_rounded, d.ratings == 0 ? '—' : d.avgStars.toStringAsFixed(1), 'Satisfaction (${d.ratings} avis)', amber), kpiCard(Icons.autorenew_rounded, '${d.doing}', 'En cours', navy)]),
               const SizedBox(height: 4),
               panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 const Text('Répartition de l’activité', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: navy)),
@@ -1654,10 +1665,24 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  // Appel téléphonique normal : ouvre le composeur du téléphone avec le bon numéro.
   Future<void> call() async {
-    final url = 'https://meet.jit.si/SanteLab-${widget.id.replaceAll('-', '')}';
-    await send('Appel audio/vidéo : $url');
-    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    String? ph;
+    try {
+      final r = await q(db.from('requests').select('patient_id').eq('id', widget.id));
+      final pid = r.isEmpty ? null : '${r.first['patient_id']}';
+      if (pid != null && pid != db.auth.currentUser!.id) {
+        final p = await q(db.from('profiles').select('phone').eq('id', pid));
+        if (p.isNotEmpty) ph = '${p.first['phone'] ?? ''}';
+      } else {
+        ph = await centerPhone();
+      }
+    } catch (_) {}
+    if (ph == null || digits(ph).isEmpty) {
+      if (mounted) snack(context, 'Le numéro à appeler n’est pas disponible.');
+      return;
+    }
+    await launchUrl(Uri.parse('tel:${ph.replaceAll(' ', '')}'));
   }
 
   Future<void> menu(Map<String, dynamic> m) async {
@@ -1788,4 +1813,360 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ]),
       );
+}
+
+// =====================================================================
+//  Lot 1 : verrouillage par code, bienvenue, avis, ordonnance
+// =====================================================================
+
+final pinCode = ValueNotifier<String?>(null);
+
+class AppLock extends StatefulWidget {
+  final Widget child;
+  const AppLock({super.key, required this.child});
+  @override
+  State<AppLock> createState() => _AppLockState();
+}
+
+class _AppLockState extends State<AppLock> with WidgetsBindingObserver {
+  bool loaded = false, locked = false;
+  DateTime? pausedAt;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    pinCode.addListener(onPin);
+    load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    pinCode.removeListener(onPin);
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    final p = (await SharedPreferences.getInstance()).getString('pin');
+    pinCode.value = p;
+    if (mounted) {
+      setState(() {
+        loaded = true;
+        locked = p != null;
+      });
+    }
+  }
+
+  void onPin() {
+    if (pinCode.value == null && locked && mounted) {
+      setState(() {
+        locked = false;
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.paused) pausedAt = DateTime.now();
+    if (s == AppLifecycleState.resumed && pinCode.value != null && pausedAt != null && DateTime.now().difference(pausedAt!).inSeconds > 120) {
+      setState(() {
+        locked = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    if (!loaded) return const Scaffold(backgroundColor: ink);
+    return Stack(fit: StackFit.expand, children: [
+      widget.child,
+      if (locked)
+        Positioned.fill(
+          child: LockScreen(
+            pin: pinCode.value ?? '',
+            onUnlock: () => setState(() {
+              locked = false;
+            }),
+          ),
+        ),
+    ]);
+  }
+}
+
+class LockScreen extends StatefulWidget {
+  final String pin;
+  final VoidCallback onUnlock;
+  const LockScreen({super.key, required this.pin, required this.onUnlock});
+  @override
+  State<LockScreen> createState() => _LockScreenState();
+}
+
+class _LockScreenState extends State<LockScreen> {
+  String entry = '';
+  bool wrong = false;
+
+  void tap(String d) {
+    if (entry.length >= 4) return;
+    setState(() {
+      entry += d;
+      wrong = false;
+    });
+    if (entry.length == 4) {
+      if (entry == widget.pin) {
+        widget.onUnlock();
+      } else {
+        Future.delayed(const Duration(milliseconds: 250), () {
+          if (mounted) {
+            setState(() {
+              entry = '';
+              wrong = true;
+            });
+          }
+        });
+      }
+    }
+  }
+
+  void back() => setState(() {
+        if (entry.isNotEmpty) entry = entry.substring(0, entry.length - 1);
+      });
+
+  Widget key(String k) {
+    if (k.isEmpty) return const SizedBox();
+    return Material(
+      color: Colors.white.withAlpha(24),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => k == '<' ? back() : tap(k),
+        child: Center(child: k == '<' ? const Icon(Icons.backspace_rounded, color: Colors.white) : Text(k, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600))),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+        backgroundColor: ink,
+        body: SafeArea(
+          child: Column(children: [
+            const Spacer(flex: 2),
+            Container(width: 84, height: 84, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(12), child: Image.asset('assets/logo.png')),
+            const SizedBox(height: 16),
+            const Text('Saint-Victor', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            Text(t('Entrez votre code', 'Enter your code'), style: const TextStyle(color: pale)),
+            const SizedBox(height: 22),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              for (var i = 0; i < 4; i++)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 8),
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: i < entry.length ? limeLight : Colors.transparent, border: Border.all(color: wrong ? const Color(0xFFFF8A80) : Colors.white54, width: 1.5)),
+                ),
+            ]),
+            const SizedBox(height: 10),
+            Text(wrong ? t('Code incorrect', 'Wrong code') : '', style: const TextStyle(color: Color(0xFFFF8A80))),
+            const Spacer(),
+            SizedBox(
+              width: 300,
+              child: GridView.count(
+                crossAxisCount: 3,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 1.35,
+                children: [for (final k in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '<']) key(k)],
+              ),
+            ),
+            TextButton(
+              onPressed: () async {
+                await (await SharedPreferences.getInstance()).remove('pin');
+                pinCode.value = null;
+                await db.auth.signOut();
+              },
+              child: Text(t('Code oublié ? Se déconnecter', 'Forgot the code? Sign out'), style: const TextStyle(color: pale)),
+            ),
+            const Spacer(),
+          ]),
+        ),
+      );
+}
+
+Future<void> setPinFlow(BuildContext c) async {
+  final a = await ask(c, t('Choisissez un code à 4 chiffres', 'Choose a 4-digit code'), t('Code', 'Code'));
+  if (a == null || !c.mounted) return;
+  if (!RegExp(r'^\d{4}$').hasMatch(a.trim())) {
+    snack(c, t('Le code doit comporter exactement 4 chiffres.', 'The code must have exactly 4 digits.'));
+    return;
+  }
+  final b = await ask(c, t('Confirmez le code', 'Confirm the code'), t('Code', 'Code'));
+  if (b == null || !c.mounted) return;
+  if (b.trim() != a.trim()) {
+    snack(c, t('Les deux codes ne sont pas identiques.', 'The two codes do not match.'));
+    return;
+  }
+  await (await SharedPreferences.getInstance()).setString('pin', a.trim());
+  pinCode.value = a.trim();
+  if (c.mounted) snack(c, t('Verrouillage activé.', 'Lock enabled.'));
+}
+
+Future<void> clearPin(BuildContext c) async {
+  await (await SharedPreferences.getInstance()).remove('pin');
+  pinCode.value = null;
+  if (c.mounted) snack(c, t('Verrouillage désactivé.', 'Lock disabled.'));
+}
+
+// ---------- Écrans de bienvenue (une seule fois) ----------
+class Onboarding extends StatefulWidget {
+  final Widget child;
+  const Onboarding({super.key, required this.child});
+  @override
+  State<Onboarding> createState() => _OnboardingState();
+}
+
+class _OnboardingState extends State<Onboarding> {
+  bool? seen;
+  final pc = PageController();
+  int page = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) {
+        setState(() {
+          seen = p.getBool('onboarded') ?? false;
+        });
+      }
+    });
+  }
+
+  Future<void> finish() async {
+    (await SharedPreferences.getInstance()).setBool('onboarded', true);
+    if (mounted) {
+      setState(() {
+        seen = true;
+      });
+    }
+  }
+
+  List<List<dynamic>> get slides => [
+        ['assets/banner_labo.jpg', Icons.add_circle_rounded, t('Commandez en quelques secondes', 'Order in seconds'), t('Choisissez vos analyses ou vos examens d’imagerie, la date et le lieu. Le centre vous confirme.', 'Choose your tests or imaging exams, the date and the place. The center confirms.')],
+        ['assets/banner_imagerie.jpg', Icons.timeline_rounded, t('Suivez votre demande en direct', 'Follow your request live'), t('Du prélèvement au résultat, vous voyez chaque étape et vous pouvez écrire ou appeler le centre.', 'From sampling to result, see every step and message or call the center.')],
+        ['assets/banner_direction.jpg', Icons.image_rounded, t('Recevez vos résultats en haute définition', 'Receive your results in high definition'), t('Vos résultats arrivent dans l’application, en toute confidentialité. Vous pouvez les revoir et les télécharger à tout moment.', 'Your results arrive in the app, in full confidentiality. View and download them anytime.')],
+      ];
+
+  Widget slide(List<dynamic> p) => Column(children: [
+        Expanded(
+          flex: 5,
+          child: SizedBox(width: double.infinity, child: ClipRRect(borderRadius: const BorderRadius.vertical(bottom: Radius.circular(36)), child: Image.asset(p[0] as String, fit: BoxFit.cover))),
+        ),
+        Expanded(
+          flex: 4,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(28, 24, 28, 0),
+            child: Column(children: [
+              Container(width: 58, height: 58, decoration: BoxDecoration(color: navy, borderRadius: BorderRadius.circular(18)), child: Icon(p[1] as IconData, color: limeLight, size: 30)),
+              const SizedBox(height: 16),
+              Text(p[2] as String, textAlign: TextAlign.center, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: navy)),
+              const SizedBox(height: 10),
+              Text(p[3] as String, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14.5, color: muted, height: 1.4)),
+            ]),
+          ),
+        ),
+      ]);
+
+  @override
+  Widget build(BuildContext c) {
+    if (seen == null) return const Scaffold(backgroundColor: ink);
+    if (seen == true) return widget.child;
+    final n = slides.length;
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        top: false,
+        child: Column(children: [
+          Expanded(child: PageView(controller: pc, onPageChanged: (i) => setState(() => page = i), children: [for (final p in slides) slide(p)])),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+            child: Row(children: [
+              TextButton(onPressed: finish, child: Text(t('Passer', 'Skip'))),
+              Expanded(
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  for (var i = 0; i < n; i++)
+                    AnimatedContainer(duration: const Duration(milliseconds: 200), margin: const EdgeInsets.symmetric(horizontal: 3), width: i == page ? 22 : 8, height: 8, decoration: BoxDecoration(color: i == page ? navy : const Color(0xFFC9D4E4), borderRadius: BorderRadius.circular(6))),
+                ]),
+              ),
+              FilledButton(
+                onPressed: () => page == n - 1 ? finish() : pc.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.easeOut),
+                child: Text(page == n - 1 ? t('Commencer', 'Start') : t('Suivant', 'Next')),
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ---------- Avis du patient (étoiles) ----------
+class RatingSheet extends StatefulWidget {
+  const RatingSheet({super.key});
+  @override
+  State<RatingSheet> createState() => _RatingSheetState();
+}
+
+class _RatingSheetState extends State<RatingSheet> {
+  int stars = 0;
+  final ctl = TextEditingController();
+
+  @override
+  Widget build(BuildContext c) => Padding(
+        padding: EdgeInsets.fromLTRB(20, 14, 20, 16 + MediaQuery.of(c).viewInsets.bottom),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 42, height: 4, decoration: BoxDecoration(color: pale, borderRadius: BorderRadius.circular(4))),
+          const SizedBox(height: 16),
+          Text(t('Comment s’est passé votre passage ?', 'How was your visit?'), textAlign: TextAlign.center, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: navy)),
+          const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            for (var i = 1; i <= 5; i++)
+              IconButton(
+                iconSize: 38,
+                onPressed: () => setState(() => stars = i),
+                icon: Icon(i <= stars ? Icons.star_rounded : Icons.star_border_rounded, color: amber),
+              ),
+          ]),
+          TextField(controller: ctl, maxLength: 300, minLines: 1, maxLines: 3, decoration: InputDecoration(hintText: t('Un commentaire ? (facultatif)', 'A comment? (optional)'))),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(onPressed: stars == 0 ? null : () => Navigator.pop(c, {'stars': stars, 'comment': ctl.text.trim()}), child: Text(t('Envoyer mon avis', 'Send my feedback'))),
+          ),
+        ]),
+      );
+}
+
+Future<bool> rateResult(BuildContext c, String resultId) async {
+  final r = await showModalBottomSheet<Map<String, dynamic>>(
+    context: c,
+    isScrollControlled: true,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+    builder: (d) => const RatingSheet(),
+  );
+  if (r == null || !c.mounted) return false;
+  final cm = '${r['comment']}';
+  return run(c, () => db.from('feedback').insert({'result_id': resultId, 'stars': r['stars'], if (cm.isNotEmpty) 'comment': cm}), t('Merci pour votre avis !', 'Thank you for your feedback!'));
+}
+
+Future<void> openPrescription(BuildContext c, String path) async {
+  try {
+    final url = await db.storage.from('ordonnances').createSignedUrl(path, 600);
+    if (c.mounted) Navigator.push(c, MaterialPageRoute(builder: (_) => ResultViewer(url: url, title: 'Ordonnance')));
+  } catch (e) {
+    if (c.mounted) snack(c, 'Erreur : $e');
+  }
 }

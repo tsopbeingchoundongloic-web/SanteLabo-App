@@ -10,6 +10,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'config.dart';
 
 part 'pro.dart';
+part 'patient.dart';
 
 SupabaseClient get db => Supabase.instance.client;
 
@@ -424,7 +425,7 @@ class Home extends StatelessWidget {
             case 'imagerie':
               return ImagerieSpace(lab: p['lab_id']);
             default:
-              return PatientPage(favLab: p['fav_lab_id']);
+              return AppLock(child: Onboarding(child: PatientPage(favLab: p['fav_lab_id'])));
           }
         },
       );
@@ -492,268 +493,30 @@ class _PatientPageState extends State<PatientPage> {
   }
 
   @override
-  Widget build(BuildContext c) {
-    final titles = [t('Accueil', 'Home'), t('Commander', 'Order'), t('Mes demandes', 'My requests'), t('Résultats', 'Results'), t('Paramètres', 'Settings')];
-    final pages = <Widget>[
-      PatientHome(onGo: (i) => setState(() => tab = i)),
-      OrderTab(key: ValueKey(lab), lab: lab),
-      const MyRequestsTab(),
-      const ResultsTab(),
-      const SettingsTab(),
-    ];
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 68,
-        title: Row(children: [
-          Container(width: 42, height: 42, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(5), child: Image.asset('assets/logo.png')),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text(tab == 0 ? '${t('Bonjour', 'Hello')}${name.isEmpty ? '' : ', $name'}' : titles[tab], overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-              Text(t('Espace patient', 'Patient space'), style: const TextStyle(fontSize: 12, color: pale)),
-            ]),
-          ),
-        ]),
-        actions: [logoutBtn()],
-      ),
-      body: Container(color: soft, child: pages[tab]),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (i) => setState(() => tab = i),
-        destinations: [
-          NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: titles[0]),
-          NavigationDestination(icon: const Icon(Icons.add_circle_outline), selectedIcon: const Icon(Icons.add_circle), label: titles[1]),
-          NavigationDestination(icon: const Icon(Icons.list_alt_outlined), selectedIcon: const Icon(Icons.list_alt), label: t('Demandes', 'Requests')),
-          NavigationDestination(icon: const Icon(Icons.image_outlined), selectedIcon: const Icon(Icons.image), label: titles[3]),
-          NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: titles[4]),
+  Widget build(BuildContext c) => ProShell(
+        title: '${greet()}${name.isEmpty ? '' : ', ${name.split(' ').first}'}',
+        subtitle: t('Espace patient · Saint-Victor de Bafia', 'Patient space · Saint-Victor de Bafia'),
+        items: [
+          NavItem(Icons.home_rounded, t('Accueil', 'Home')),
+          NavItem(Icons.add_circle_rounded, t('Commander', 'Order')),
+          NavItem(Icons.assignment_rounded, t('Demandes', 'Requests')),
+          NavItem(Icons.image_rounded, t('Résultats', 'Results')),
         ],
-      ),
-    );
-  }
-}
-
-class PatientHome extends StatelessWidget {
-  final void Function(int) onGo;
-  const PatientHome({super.key, required this.onGo});
-  @override
-  Widget build(BuildContext c) => ListView(padding: const EdgeInsets.all(14), children: [
-        ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/accueil.jpg', height: 130, width: double.infinity, fit: BoxFit.cover)),
-        const SizedBox(height: 12),
-        Row(children: [
-          Expanded(child: homeTile(Icons.add_circle, t('Commander', 'Order'), t('Analyses et imagerie', 'Tests and imaging'), navy, () => onGo(1))),
-          const SizedBox(width: 12),
-          Expanded(child: homeTile(Icons.list_alt, t('Mes demandes', 'My requests'), t('Suivi en direct', 'Live tracking'), lime, () => onGo(2))),
-        ]),
-        const SizedBox(height: 12),
-        loadIn(q(db.from('contacts').select().order('id').limit(1)), (cs) {
-          final ph = cs.isEmpty ? null : '${cs.first['phone']}';
-          return Row(children: [
-            Expanded(child: homeTile(Icons.call, t('Appeler', 'Call'), t('Le centre', 'The center'), const Color(0xFF0E7C86), ph == null ? null : () => launchUrl(Uri.parse('tel:$ph'.replaceAll(' ', ''))))),
-            const SizedBox(width: 12),
-            Expanded(child: homeTile(Icons.chat, 'WhatsApp', t('Écrire au centre', 'Message the center'), const Color(0xFF25A244), ph == null ? null : () => launchUrl(Uri.parse('https://wa.me/${digits(ph)}'), mode: LaunchMode.externalApplication))),
-          ]);
-        }),
-        const SizedBox(height: 12),
-        box([
-          Text(t('Nos services', 'Our services'), style: const TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          Wrap(spacing: 6, children: [Chip(label: Text(t('Radiographie', 'X-ray'))), Chip(label: Text(t('Échographie', 'Ultrasound'))), Chip(label: Text(t('Analyses médicales', 'Medical tests')))]),
-        ]),
-      ]);
-}
-
-class SettingsTab extends StatelessWidget {
-  const SettingsTab({super.key});
-  @override
-  Widget build(BuildContext c) => ListView(padding: const EdgeInsets.all(14), children: [
-        box([
-          Text(t('Langue', 'Language'), style: const TextStyle(fontWeight: FontWeight.w700)),
-          ValueListenableBuilder<String>(
-            valueListenable: lang,
-            builder: (c, l, _) => Column(children: [
-              ListTile(contentPadding: EdgeInsets.zero, title: const Text('Français'), trailing: l == 'fr' ? const Icon(Icons.check_circle, color: lime) : null, onTap: () => setLang('fr')),
-              ListTile(contentPadding: EdgeInsets.zero, title: const Text('English'), trailing: l == 'en' ? const Icon(Icons.check_circle, color: lime) : null, onTap: () => setLang('en')),
-            ]),
-          ),
-        ]),
-        box([
-          Text('Notifications', style: const TextStyle(fontWeight: FontWeight.w700)),
-          ValueListenableBuilder<bool>(
-            valueListenable: notifReq,
-            builder: (c, v, _) => SwitchListTile(contentPadding: EdgeInsets.zero, value: v, title: Text(t('Avancement de mes demandes', 'Progress of my requests')), onChanged: (x) async {
-              notifReq.value = x;
-              (await SharedPreferences.getInstance()).setBool('notifReq', x);
-            }),
-          ),
-          ValueListenableBuilder<bool>(
-            valueListenable: notifMsg,
-            builder: (c, v, _) => SwitchListTile(contentPadding: EdgeInsets.zero, value: v, title: Text(t('Messages du centre', 'Messages from the center')), onChanged: (x) async {
-              notifMsg.value = x;
-              (await SharedPreferences.getInstance()).setBool('notifMsg', x);
-            }),
-          ),
-        ]),
-        box([
-          Text(t('Appels et contact', 'Calls and contact'), style: const TextStyle(fontWeight: FontWeight.w700)),
-          loadIn(q(db.from('contacts').select().order('id')), (cs) => Column(children: [for (final k in cs) contactTile(k)])),
-          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.videocam, color: navy), title: Text(t('Appel audio ou vidéo', 'Audio or video call')), subtitle: Text(t('Ouvrez une demande, puis touchez l’icône d’appel.', 'Open a request, then tap the call icon.'))),
-        ]),
-        box([
-          Text(t('Mon compte', 'My account'), style: const TextStyle(fontWeight: FontWeight.w700)),
-          loadIn(q(db.from('profiles').select('full_name, phone').eq('id', db.auth.currentUser!.id)), (l) => l.isEmpty ? const SizedBox() : ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.person, color: navy), title: Text('${l.first['full_name'] ?? ''}'), subtitle: Text('${l.first['phone'] ?? ''}'))),
-          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.key, color: navy), title: Text(t('J’ai un code d’invitation (personnel)', 'I have an invitation code (staff)')), onTap: () => redeem(c)),
-          OutlinedButton(onPressed: () => db.auth.signOut(), child: Text(t('Se déconnecter', 'Sign out'))),
-        ]),
-      ]);
-}
-
-class OrderTab extends StatefulWidget {
-  final String? lab;
-  const OrderTab({super.key, this.lab});
-  @override
-  State<OrderTab> createState() => _OrderTabState();
-}
-
-class _OrderTabState extends State<OrderTab> {
-  final sel = <String>{}, centerOnly = <String>{}, imaging = <String>{};
-  final quarter = TextEditingController(), addr = TextEditingController();
-  String slot = slots.first, mode = 'domicile';
-  DateTime? date;
-  double? lat, lng;
-  bool busy = false;
-  late final ex = q(db.from('lab_exams').select('custom_conditions, exams(name, discipline, conditions, at_center_only, service)').eq('lab_id', widget.lab ?? '').eq('active', true));
-
-  List<String> get labSel => sel.where((n) => !imaging.contains(n)).toList();
-  List<String> get imgSel => sel.where(imaging.contains).toList();
-  bool get labAtCenter => mode == 'centre' || labSel.any(centerOnly.contains);
-
-  Future<void> send() async {
-    final lb = labSel, im = imgSel, labCtr = labAtCenter;
-    if (sel.isEmpty || date == null || (lb.isNotEmpty && !labCtr && (quarter.text.trim().isEmpty || addr.text.trim().isEmpty))) {
-      snack(context, 'Choisissez au moins un examen, la date et, pour un prélèvement à domicile, le quartier et le lieu.');
-      return;
-    }
-    Map<String, dynamic> row(String service, List<String> names, bool centre) => {
-          'patient_id': db.auth.currentUser!.id,
-          'lab_id': widget.lab,
-          'service': service,
-          'exam_names': names,
-          'mode': centre ? 'centre' : 'domicile',
-          'quarter': centre ? 'Au centre' : quarter.text.trim(),
-          'address': centre ? 'Centre St Victor de Bafia' : addr.text.trim(),
-          'wanted_date': date!.toIso8601String().substring(0, 10),
-          'slot': slot,
-          'lat': centre ? null : lat,
-          'lng': centre ? null : lng,
-        };
-    final rows0 = <Map<String, dynamic>>[
-      if (lb.isNotEmpty) row('laboratoire', lb, labCtr),
-      if (im.isNotEmpty) row('imagerie', im, true),
-    ];
-    setState(() => busy = true);
-    final ok = await run(context, () => db.from('requests').insert(rows0),
-        rows0.length > 1 ? 'Vos demandes d’analyses et d’imagerie sont envoyées. Le centre va vous confirmer.' : 'Demande envoyée. Le centre va vous confirmer.');
-    if (ok) { lat = null; lng = null; sel.clear(); quarter.clear(); addr.clear(); date = null; }
-    if (mounted) setState(() => busy = false);
-  }
-
-  @override
-  Widget build(BuildContext c) {
-    if (widget.lab == null) return const Center(child: Text('Centre indisponible. Reconnectez-vous.'));
-    return load(ex, (l) {
-      for (final x in l) {
-        final e = x['exams'];
-        if (e['at_center_only'] == true) centerOnly.add(e['name']);
-        if (e['service'] == 'imagerie') imaging.add(e['name']);
-      }
-      final hasLab = labSel.isNotEmpty, hasImg = imgSel.isNotEmpty, home = hasLab && !labAtCenter;
-      return ListView(padding: const EdgeInsets.all(12), children: [
-        ClipRRect(borderRadius: BorderRadius.circular(14), child: Image.asset('assets/accueil.jpg', height: 140, width: double.infinity, fit: BoxFit.cover)),
-        const SizedBox(height: 12),
-        const Text('1. Choisissez vos examens', style: TextStyle(fontWeight: FontWeight.bold)),
-        for (final x in l)
-          CheckboxListTile(
-            value: sel.contains(x['exams']['name']),
-            onChanged: (v) => setState(() => v == true ? sel.add(x['exams']['name']) : sel.remove(x['exams']['name'])),
-            controlAffinity: ListTileControlAffinity.leading,
-            title: Text(x['exams']['name']),
-            subtitle: Text('${x['exams']['discipline']} — ${x['custom_conditions'] ?? x['exams']['conditions']}'),
-          ),
-        const Divider(),
-        const Text('2. Où et quand ?', style: TextStyle(fontWeight: FontWeight.bold)),
-        if (hasImg)
-          const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('Les examens d’imagerie se font au centre : venez avec votre ordonnance.', style: TextStyle(color: Color(0xFF123C80)))),
-        if (hasLab && !labSel.any(centerOnly.contains))
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'domicile', label: Text('Analyses à domicile'), icon: Icon(Icons.home)),
-              ButtonSegment(value: 'centre', label: Text('Analyses au centre'), icon: Icon(Icons.local_hospital)),
-            ],
-            selected: {mode},
-            onSelectionChanged: (v) => setState(() => mode = v.first),
-          ),
-        if (home) ...[
-          TextField(controller: quarter, decoration: const InputDecoration(labelText: 'Quartier')),
-          TextField(controller: addr, decoration: const InputDecoration(labelText: 'Adresse / lieu / repère')),
+        pages: (go) => [
+          PatientHome(go: go, name: name),
+          OrderTab(key: ValueKey(lab), lab: lab, go: go),
+          MyRequestsTab(go: go),
+          const ResultsTab(),
         ],
-        DropdownButtonFormField<String>(
-          value: slot,
-          items: [for (final x in slots) DropdownMenuItem(value: x, child: Text(x))],
-          onChanged: (v) => setState(() => slot = v ?? slot),
-          decoration: const InputDecoration(labelText: 'Créneau souhaité'),
-        ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          title: Text(date == null ? 'Choisir la date' : date!.toIso8601String().substring(0, 10)),
-          trailing: const Icon(Icons.calendar_today),
-          onTap: () async {
-            final d = await showDatePicker(context: c, initialDate: DateTime.now(), firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 60)));
-            if (d != null) setState(() => date = d);
-          },
-        ),
-        if (home)
-          OutlinedButton.icon(
-            icon: const Icon(Icons.my_location),
-            label: Text(lat == null ? 'Partager ma position (GPS)' : 'Position enregistrée'),
-            onPressed: () async {
-              final p = await myPosition(c);
-              if (p != null) setState(() { lat = p.latitude; lng = p.longitude; });
-            },
-          ),
-        FilledButton(onPressed: busy ? null : send, child: Text(home ? 'Envoyer ma demande' : 'Demander un rendez-vous')),
-      ]);
-    });
-  }
-}
-
-class MyRequestsTab extends StatefulWidget {
-  const MyRequestsTab({super.key});
-  @override
-  State<MyRequestsTab> createState() => _MyRequestsTabState();
-}
-
-class _MyRequestsTabState extends State<MyRequestsTab> {
-  @override
-  Widget build(BuildContext c) => load(q(db.from('requests').select().eq('patient_id', db.auth.currentUser!.id).order('created_at', ascending: false)), (l) => lst([
-        for (final r in l)
-          Card(
-            margin: const EdgeInsets.all(8),
-            child: ListTile(
-              title: Text((r['exam_names'] as List).join(', ')),
-              subtitle: Text('${r['wanted_date']} · ${r['slot']}\n${r['quarter']} · ${r['address']}\n${statusFr[r['status']] ?? r['status']}'),
-              isThreeLine: true,
-              onTap: () => openChat(c, r),
-              trailing: ['pending', 'accepted'].contains(r['status'])
-                  ? TextButton(
-                      onPressed: () async {
-                        await run(c, () => db.from('requests').update({'status': 'cancelled'}).eq('id', r['id']));
-                        if (mounted) setState(() {});
-                      },
-                      child: const Text('Annuler'))
-                  : null,
-            ),
-          ),
-      ], () async => setState(() {})));
+        hub: (c, go) => [
+          HubAction(Icons.add_circle_rounded, t('Commander', 'Order'), lime, () => go(1)),
+          HubAction(Icons.call_rounded, t('Appeler', 'Call'), teal, () => callCenter(c)),
+          HubAction(Icons.chat_rounded, 'WhatsApp', const Color(0xFF25A244), () => whatsappCenter(c)),
+          HubAction(Icons.settings_rounded, t('Paramètres', 'Settings'), navy, () => pushPage(c, t('Paramètres', 'Settings'), const SettingsTab())),
+          notifAction(c),
+          logoutAction(),
+        ],
+      );
 }
 
 // ---------- MAJOR ----------
@@ -1626,12 +1389,13 @@ Future<void> openResult(BuildContext c, String path, {bool download = false}) as
 
 class ResultViewer extends StatelessWidget {
   final String url;
-  const ResultViewer({super.key, required this.url});
+  final String? title;
+  const ResultViewer({super.key, required this.url, this.title});
   @override
   Widget build(BuildContext c) => Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(
-          title: Text(t('Résultat', 'Result')),
+          title: Text(title ?? t('Résultat', 'Result')),
           actions: [IconButton(icon: const Icon(Icons.download), tooltip: t('Télécharger', 'Download'), onPressed: () => launchUrl(Uri.parse('$url&download=resultat-saint-victor.jpg'), mode: LaunchMode.externalApplication))],
         ),
         body: InteractiveViewer(
@@ -1641,29 +1405,6 @@ class ResultViewer extends StatelessWidget {
           ),
         ),
       );
-}
-
-class ResultsTab extends StatefulWidget {
-  const ResultsTab({super.key});
-  @override
-  State<ResultsTab> createState() => _ResultsTabState();
-}
-
-class _ResultsTabState extends State<ResultsTab> {
-  @override
-  Widget build(BuildContext c) => load(q(db.from('results').select('id, title, file_path, service, created_at').order('created_at', ascending: false)), (l) => lst([
-        if (l.isEmpty) Padding(padding: const EdgeInsets.all(24), child: Text(t('Vos résultats apparaîtront ici dès que le centre les aura envoyés.', 'Your results will appear here as soon as the center sends them.'))),
-        for (final x in l)
-          box([
-            Row(children: [Icon(x['service'] == 'imagerie' ? Icons.monitor_heart : Icons.science, color: navy), const SizedBox(width: 8), Expanded(child: Text('${x['title']}', style: const TextStyle(fontWeight: FontWeight.w700)))]),
-            Text(day(x['created_at']), style: const TextStyle(color: Color(0xFF5A6B82), fontSize: 12)),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, children: [
-              FilledButton.icon(icon: const Icon(Icons.visibility), label: Text(t('Voir', 'View')), onPressed: () => openResult(c, x['file_path'])),
-              OutlinedButton.icon(icon: const Icon(Icons.download), label: Text(t('Télécharger', 'Download')), onPressed: () => openResult(c, x['file_path'], download: true)),
-            ]),
-          ]),
-      ], () async => setState(() {})));
 }
 
 class ResultsStaff extends StatefulWidget {
