@@ -24,10 +24,13 @@ jobs:
         run: |
           sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
           sed -i 's#android:label="[^"]*"#android:label="Saint-Victor"#' android/app/src/main/AndroidManifest.xml
-      - name: Cle de signature stable (mises a jour par-dessus l'ancienne version)
+      - name: Cle de signature (coffre GitHub)
+        env:
+          KS: ${{ secrets.KEYSTORE_B64 }}
         run: |
+          if [ -z "$KS" ]; then echo "ERREUR : le secret KEYSTORE_B64 est absent. Ouvrez Settings > Secrets and variables > Actions et creez-le."; exit 1; fi
           mkdir -p ~/.android
-          echo "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" | base64 -d > ~/.android/debug.keystore
+          echo "$KS" | base64 -d > ~/.android/debug.keystore
       - run: flutter pub get
       - name: Icone de l'application
         continue-on-error: true
@@ -75,7 +78,7 @@ jobs:
               theme_color: "#123C80"
           EOT
           dart run flutter_launcher_icons -f icons_web.yaml
-      - run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+      - run: flutter build web --release --base-href "/${{ github.event.repository.name }}/" --no-web-resources-cdn
       - uses: actions/upload-artifact@v4
         with:
           name: SaintVictor-Web-iPhone
