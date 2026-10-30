@@ -22,7 +22,7 @@ jobs:
       - run: flutter create . --platforms=android --project-name santelab --org cm.stvictor
       - name: Permissions et nom de l'application
         run: |
-          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <application#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' android/app/src/main/AndroidManifest.xml
           sed -i 's#android:label="[^"]*"#android:label="Saint-Victor"#' android/app/src/main/AndroidManifest.xml
       - name: Cle de signature (coffre GitHub)
         env:
@@ -37,7 +37,20 @@ jobs:
         run: dart run flutter_launcher_icons
       - name: Adresse du depot (mises a jour dans l'application)
         run: sed -i "s#REPO_AUTO#${{ github.repository }}#" lib/config.dart
+      - name: Version minimale d'Android (notifications)
+        run: sed -i -E 's/minSdk(Version)? *=? *flutter\.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts android/app/build.gradle 2>/dev/null || true
+      - name: Identifiant definitif de l'application
+        run: |
+          sed -i -E 's/applicationId *=? *"cm\.stvictor\.santelab"/applicationId = "cm.stvictor.saintvictor"/' android/app/build.gradle.kts android/app/build.gradle 2>/dev/null || true
+          grep -rn "applicationId" android/app/build.gradle* || true
       - run: flutter build apk --release --build-number=${{ github.run_number }}
+      - name: Fichier pour le Play Store (AAB)
+        run: flutter build appbundle --release --build-number=${{ github.run_number }} --dart-define=PLAY=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SaintVictor-Play-AAB
+          path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: SaintVictor-APK
@@ -121,6 +134,8 @@ jobs:
           EOT
           dart run flutter_launcher_icons -f icons_web.yaml
       - run: flutter build web --release --base-href "/" --no-web-resources-cdn
+      - name: Pages de confidentialite
+        run: cp -r site/. build/web/ || true
       - name: Configuration Firebase Hosting
         run: |
           cat > firebase.json <<'EOT'
