@@ -1460,7 +1460,7 @@ class _UsersAdminState extends State<UsersAdmin> {
 
 // ---------- Espaces ----------
 HubAction notifAction(BuildContext c) => HubAction(Icons.notifications_rounded, 'Notifications', teal, () => Navigator.push(c, MaterialPageRoute(builder: (_) => const NotifPage())));
-HubAction logoutAction() => HubAction(Icons.logout_rounded, 'Déconnexion', danger, () => db.auth.signOut());
+HubAction logoutAction() => HubAction(Icons.logout_rounded, 'Déconnexion', danger, () => signOutAll());
 
 class NoCenter extends StatelessWidget {
   final String title;
@@ -1585,6 +1585,7 @@ class SuperShell extends StatelessWidget {
               HubAction(Icons.apartment_rounded, 'Centre', const Color(0xFF7A4BB8), () => pushPage(c, 'Centre : contacts et réglages', CenterAdmin(lab: lab, isSuper: true))),
               HubAction(Icons.history_rounded, 'Activité', teal, () => pushPage(c, 'Activité du centre', const DirActivity())),
               HubAction(Icons.groups_rounded, 'Équipe', green, () => pushPage(c, 'Équipe du centre', const DirTeam())),
+              HubAction(Icons.delete_sweep_rounded, 'Suppressions', danger, () => pushPage(c, 'Demandes de suppression', const DeletionRequests())),
               HubAction(Icons.today_rounded, 'Rapport du jour', amber, () => copyReport(c, 0, 'aujourd’hui')),
               HubAction(Icons.admin_panel_settings_rounded, 'Vue Direction', ink, () => Navigator.push(c, MaterialPageRoute(builder: (_) => const DirectionPage()))),
               notifAction(c),
@@ -1985,7 +1986,7 @@ class _LockScreenState extends State<LockScreen> {
               onPressed: () async {
                 await (await SharedPreferences.getInstance()).remove('pin');
                 pinCode.value = null;
-                await db.auth.signOut();
+                await signOutAll();
               },
               child: Text(t('Code oublié ? Se déconnecter', 'Forgot the code? Sign out'), style: const TextStyle(color: pale)),
             ),

@@ -7,3 +7,10 @@ const kTechEmail = 'tsopbeingchoundongloic@gmail.com';
 const kBuild = 3;
 // Dépôt GitHub (remplacé automatiquement à la fabrication) : sert à retrouver la dernière version de l'application.
 const kRepo = 'REPO_AUTO';
+// Vrai uniquement pour la version publiée sur le Play Store (pas de mise à jour hors du Play Store).
+const kPlay = bool.fromEnvironment('PLAY');
+// Notifications Firebase (à remplir avec les valeurs du fichier google-services.json).
+const kFcmApiKey = '';
+const kFcmAppId = '';
+const kFcmSenderId = '';
+const kFcmProjectId = 'saint-victor-bafia-9e5da';

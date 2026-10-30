@@ -831,11 +831,228 @@ class SettingsTab extends StatelessWidget {
             ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.videocam_rounded, color: navy), title: Text(t('Appeler le centre', 'Call the center')), subtitle: Text(t('Dans une demande, touchez l’icône d’appel : le téléphone lance un appel normal.', 'In a request, tap the call icon: your phone starts a normal call.'))),
           ])),
           panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(t('Mes données', 'My data'), style: const TextStyle(fontWeight: FontWeight.w800)),
+            ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.policy_rounded, color: navy), title: Text(t('Politique de confidentialité', 'Privacy policy')), trailing: const Icon(Icons.open_in_new_rounded, size: 18), onTap: () => launchUrl(Uri.parse(kPolicyUrl), mode: LaunchMode.externalApplication)),
+            ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.delete_forever_rounded, color: danger), title: Text(t('Supprimer mon compte et mes données', 'Delete my account and data'), style: const TextStyle(color: danger)), subtitle: Text(t('Retire aussi votre consentement.', 'Also withdraws your consent.')), onTap: () => requestDeletion(c)),
+          ])),
+          panel(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(t('Mon compte', 'My account'), style: const TextStyle(fontWeight: FontWeight.w800)),
             ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.key_rounded, color: navy), title: Text(t('J’ai un code d’invitation (personnel)', 'I have an invitation code (staff)')), onTap: () => redeem(c)),
             const SizedBox(height: 6),
-            OutlinedButton.icon(icon: const Icon(Icons.logout_rounded), label: Text(t('Se déconnecter', 'Sign out')), onPressed: () => db.auth.signOut()),
+            OutlinedButton.icon(icon: const Icon(Icons.logout_rounded), label: Text(t('Se déconnecter', 'Sign out')), onPressed: () => signOutAll()),
           ])),
         ]),
+      );
+}
+
+// =====================================================================
+//  Consentement éclairé, politique de confidentialité, suppression du compte
+// =====================================================================
+
+const kConsentVersion = '2026-10-v1';
+const kPolicyUrl = 'https://saint-victor-bafia-9e5da.web.app/privacy.html';
+const kDeleteUrl = 'https://saint-victor-bafia-9e5da.web.app/delete-account.html';
+
+Widget consentPoint(IconData ic, String title, String body) => Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(width: 38, height: 38, decoration: BoxDecoration(color: navy.withAlpha(24), borderRadius: BorderRadius.circular(11)), child: Icon(ic, color: navy, size: 20)),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 2),
+            Text(body, style: const TextStyle(fontSize: 13, color: Color(0xFF3B4C63), height: 1.35)),
+          ]),
+        ),
+      ]),
+    );
+
+class ConsentGate extends StatefulWidget {
+  final Widget child;
+  const ConsentGate({super.key, required this.child});
+  @override
+  State<ConsentGate> createState() => _ConsentGateState();
+}
+
+class _ConsentGateState extends State<ConsentGate> {
+  bool? ok;
+  bool agree = false, notif = true, busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    check();
+  }
+
+  Future<void> check() async {
+    final p = await SharedPreferences.getInstance();
+    final uid = db.auth.currentUser?.id ?? '';
+    var done = p.getString('consent_$uid') == kConsentVersion;
+    if (!done) {
+      try {
+        final r = await q(db.from('consents').select('version').eq('version', kConsentVersion));
+        if (r.isNotEmpty) {
+          done = true;
+          await p.setString('consent_$uid', kConsentVersion);
+        }
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {
+        ok = done;
+      });
+    }
+  }
+
+  Future<void> accept() async {
+    setState(() {
+      busy = true;
+    });
+    try {
+      await db.from('consents').insert({'version': kConsentVersion, 'notifications': notif});
+    } catch (_) {}
+    final p = await SharedPreferences.getInstance();
+    await p.setString('consent_${db.auth.currentUser?.id ?? ''}', kConsentVersion);
+    notifReq.value = notif;
+    notifMsg.value = notif;
+    await p.setBool('notifReq', notif);
+    await p.setBool('notifMsg', notif);
+    if (mounted) {
+      setState(() {
+        ok = true;
+        busy = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    if (ok == null) return const Scaffold(backgroundColor: ink);
+    if (ok == true) return widget.child;
+    return Scaffold(
+      backgroundColor: soft,
+      body: SafeArea(
+        child: Column(children: [
+          Expanded(
+            child: ListView(padding: const EdgeInsets.all(18), children: [
+              Row(children: [
+                Container(width: 52, height: 52, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), padding: const EdgeInsets.all(8), child: Image.asset('assets/logo.png')),
+                const SizedBox(width: 12),
+                const Expanded(child: Text('Saint-Victor de Bafia', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: navy))),
+              ]),
+              const SizedBox(height: 18),
+              Text(t('Vos données de santé, en toute confidentialité', 'Your health data, kept confidential'), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: navy)),
+              const SizedBox(height: 8),
+              Text(t('Avant de continuer, voici l’essentiel. Vous restez libre de refuser.', 'Before you continue, here is what matters. You are free to decline.'), style: const TextStyle(color: muted)),
+              const SizedBox(height: 16),
+              panel(Column(children: [
+                consentPoint(Icons.badge_rounded, t('Ce que nous collectons', 'What we collect'), t('Votre nom et votre téléphone, les examens demandés, vos ordonnances, vos résultats, vos messages et, pour un prélèvement à domicile, votre position.', 'Your name and phone, the exams requested, prescriptions, results, messages and, for home sampling, your location.')),
+                consentPoint(Icons.medical_services_rounded, t('Pourquoi', 'Why'), t('Pour traiter vos demandes, réaliser vos examens, vous envoyer vos résultats et vous contacter. Rien d’autre.', 'To handle your requests, carry out your exams, send your results and contact you. Nothing else.')),
+                consentPoint(Icons.lock_rounded, t('Qui y accède', 'Who can see it'), t('Seulement le personnel autorisé du centre, selon son rôle. Vos données ne sont ni vendues ni publiées.', 'Only authorized center staff, depending on their role. Your data is neither sold nor published.')),
+                consentPoint(Icons.cloud_rounded, t('Où elles sont conservées', 'Where it is stored'), t('Chez des prestataires informatiques sécurisés (Supabase, Google), dont les serveurs peuvent être situés hors du Cameroun. Les échanges sont chiffrés.', 'With secure IT providers (Supabase, Google) whose servers may be outside Cameroon. Transfers are encrypted.')),
+                consentPoint(Icons.verified_user_rounded, t('Vos droits', 'Your rights'), t('Voir, corriger, retirer votre consentement ou supprimer votre compte à tout moment, dans Paramètres.', 'View, correct, withdraw your consent or delete your account at any time, in Settings.')),
+              ])),
+              TextButton.icon(
+                icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                label: Text(t('Lire la politique de confidentialité complète', 'Read the full privacy policy')),
+                onPressed: () => launchUrl(Uri.parse(kPolicyUrl), mode: LaunchMode.externalApplication),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: agree,
+                onChanged: (v) => setState(() => agree = v ?? false),
+                title: Text(t('J’ai lu ces informations et j’accepte que le centre traite mes données de santé pour traiter mes demandes et m’envoyer mes résultats. (obligatoire)', 'I have read this information and agree that the center processes my health data to handle my requests and send my results. (required)'), style: const TextStyle(fontSize: 13.5)),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: notif,
+                onChanged: (v) => setState(() => notif = v ?? false),
+                title: Text(t('Je souhaite être prévenu de l’avancement de mes demandes et des messages du centre. (facultatif)', 'I would like to be notified of the progress of my requests and messages from the center. (optional)'), style: const TextStyle(fontSize: 13.5)),
+              ),
+            ]),
+          ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+            decoration: const BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Color(0x1A000000), blurRadius: 10, offset: Offset(0, -2))]),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              SizedBox(width: double.infinity, child: FilledButton(onPressed: agree && !busy ? accept : null, child: Text(t('Accepter et continuer', 'Accept and continue')))),
+              TextButton(onPressed: () => signOutAll(), child: Text(t('Refuser et me déconnecter', 'Decline and sign out'), style: const TextStyle(color: danger))),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+Future<void> requestDeletion(BuildContext c) async {
+  final yes = await confirmBox(
+    c,
+    t('Supprimer mon compte ?', 'Delete my account?'),
+    t('Votre demande sera transmise au centre. Votre compte et vos données seront supprimés dans un délai de 30 jours, sauf les éléments que la loi oblige le centre à conserver. Vous serez déconnecté.', 'Your request will be sent to the center. Your account and data will be deleted within 30 days, except what the law requires the center to keep. You will be signed out.'),
+    t('Envoyer la demande', 'Send request'),
+  );
+  if (!yes || !c.mounted) return;
+  final ok = await run(c, () => db.from('deletion_requests').insert({}), t('Demande envoyée.', 'Request sent.'));
+  if (ok) await signOutAll();
+}
+
+class DeletionRequests extends StatefulWidget {
+  const DeletionRequests({super.key});
+  @override
+  State<DeletionRequests> createState() => _DeletionRequestsState();
+}
+
+class _DeletionRequestsState extends State<DeletionRequests> {
+  late Future<List<Map<String, dynamic>>> fut = fetch();
+
+  Future<List<Map<String, dynamic>>> fetch() => q(db.from('deletion_requests').select('id, requested_at, processed, user:profiles!user_id(full_name, phone)').order('requested_at', ascending: false).limit(200));
+
+  void refresh() {
+    if (mounted) {
+      setState(() {
+        fut = fetch();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext c) => FutureBuilder<List<Map<String, dynamic>>>(
+        future: fut,
+        builder: (c, s) {
+          if (s.hasError) return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text('Erreur : ${s.error}\n\nAvez-vous exécuté le fichier SQL de cette version ?')));
+          if (!s.hasData) return const ShimmerList();
+          final l = s.data!;
+          return ListView(padding: const EdgeInsets.all(12), children: [
+            panel(const Text('Pour supprimer un compte : Supabase, menu Authentication, Users, trois points à droite de la personne, Delete user. Puis touchez « Marquer comme traité » ici. Conservez ce qui doit l’être légalement avant de supprimer.', style: TextStyle(fontSize: 12.5, color: muted))),
+            if (l.isEmpty) const Padding(padding: EdgeInsets.all(28), child: Center(child: Text('Aucune demande de suppression.'))),
+            for (final r in l)
+              panel(
+                Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('${(r['user'] ?? {})['full_name'] ?? 'Compte'}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                      Text('${(r['user'] ?? {})['phone'] ?? ''} · ${day(r['requested_at'])}', style: const TextStyle(fontSize: 12.5, color: muted)),
+                    ]),
+                  ),
+                  if (r['processed'] == true)
+                    const Text('Traité', style: TextStyle(color: green, fontWeight: FontWeight.w700))
+                  else
+                    OutlinedButton(
+                      onPressed: () async {
+                        await run(c, () => db.from('deletion_requests').update({'processed': true}).eq('id', r['id']));
+                        refresh();
+                      },
+                      child: const Text('Marquer comme traité'),
+                    ),
+                ]),
+                pad: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 8),
+              ),
+          ]);
+        },
       );
 }

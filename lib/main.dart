@@ -6,11 +6,14 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
 import 'config.dart';
+import 'package:firebase_core/firebase_core.dart' show Firebase, FirebaseOptions;
+import 'package:firebase_messaging/firebase_messaging.dart' show FirebaseMessaging;
 
 part 'pro.dart';
 part 'patient.dart';
+part 'push.dart';
 
 SupabaseClient get db => Supabase.instance.client;
 
@@ -18,7 +21,7 @@ const slots = ['Matin (7h–10h)', 'Fin de matinée (10h–12h)', 'Après-midi (
 const statusFr = {'pending': 'En attente', 'accepted': 'Acceptée', 'en_route': 'Préleveur en route', 'arrived': 'Préleveur arrivé', 'collected': 'Prélèvement fait', 'done': 'Terminée', 'cancelled': 'Annulée'};
 
 List<Map<String, dynamic>> rows(dynamic d) => List<Map<String, dynamic>>.from(d as List);
-Widget logoutBtn() => Row(mainAxisSize: MainAxisSize.min, children: [const BellBtn(), IconButton(icon: const Icon(Icons.logout), tooltip: 'Se déconnecter', onPressed: () => db.auth.signOut())]);
+Widget logoutBtn() => Row(mainAxisSize: MainAxisSize.min, children: [const BellBtn(), IconButton(icon: const Icon(Icons.logout), tooltip: 'Se déconnecter', onPressed: () => signOutAll())]);
 
 const navy = Color(0xFF123C80), lime = Color(0xFF7AB51D), limeLight = Color(0xFF9FD43A), pale = Color(0xFFC9D8F0), soft = Color(0xFFF3F7FB);
 final lang = ValueNotifier<String>('fr');
@@ -72,6 +75,7 @@ Future<void> main() async {
     runApp(ConfigError('$e'));
     return;
   }
+  watchPush();
   runApp(const StVictorApp());
 }
 
@@ -106,6 +110,7 @@ class StVictorApp extends StatelessWidget {
   Widget build(BuildContext c) => ValueListenableBuilder<String>(
         valueListenable: lang,
         builder: (c, _, __) => MaterialApp(
+          scaffoldMessengerKey: appMessenger,
           title: 'Saint-Victor',
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
@@ -425,7 +430,7 @@ class Home extends StatelessWidget {
             case 'imagerie':
               return ImagerieSpace(lab: p['lab_id']);
             default:
-              return AppLock(child: Onboarding(child: PatientPage(favLab: p['fav_lab_id'])));
+              return AppLock(child: Onboarding(child: ConsentGate(child: PatientPage(favLab: p['fav_lab_id']))));
           }
         },
       );
@@ -869,7 +874,7 @@ Future<void> redeem(BuildContext c) async {
   final code = await ask(c, 'Code d’invitation', 'Code reçu de votre laboratoire');
   if (code == null || code.isEmpty || !c.mounted) return;
   final ok = await run(c, () => db.rpc('redeem_invite', params: {'p_code': code}), 'Compte activé. Reconnectez-vous.');
-  if (ok) await db.auth.signOut();
+  if (ok) await signOutAll();
 }
 
 void openChat(BuildContext c, Map<String, dynamic> r) => Navigator.push(
@@ -1189,6 +1194,7 @@ class _UpdateGuardState extends State<UpdateGuard> {
   }
 
   Future<void> _check() async {
+    if (kPlay) return;
     try {
       var info = await _fromRelease();
       if (info == null) {
